@@ -38,3 +38,6 @@ data/user_data/*
 
 # Logs
 *.log 
+
+sumari-*-firebase-adminsdk-*.json
+sumari-458514-*.json

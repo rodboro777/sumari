@@ -1,53 +1,44 @@
+"""Payment processing service."""
+
 from typing import Dict, Optional, Tuple
 from datetime import datetime
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.error import TelegramError
-
-from src.database.db_manager import DatabaseManager
 from src.services.payments.stripe_service import StripeService
 from src.services.payments.nowpayments_service import NOWPaymentsService
 from src.services.payments.subscription_manager import SubscriptionManager
+from src.config import PAYMENT_PROVIDER_TOKEN, STRIPE_CONFIG
+from src.database import db_manager
+from src.logging import metrics_collector
+from src.core.keyboards.payment_success import PaymentSuccessKeyboard
 
 class PaymentProcessor:
-    def __init__(
-        self,
-        db_manager: DatabaseManager,
-        stripe_secret_key: str,
-    ):
-        """Initialize payment processor with required services."""
-        self.logger = logging.getLogger("payment_processor")
-        self.db = db_manager
-        
-        # Initialize services
-        self.stripe = StripeService(stripe_secret_key)
-        self.nowpayments = NOWPaymentsService()
-        self.subscription_manager = SubscriptionManager(db_manager)
+    _instance = None
 
-        # Premium tiers configuration
-        self.premium_tiers = {
-            "based": {
-                "name": "Based Premium",
-                "description": "100 summaries per month",
-                "summaries_limit": 100,
-                "duration_days": 30,
-                "features": ["100 summaries/month", "Text summaries"],
-                "stripe_product_id": "prod_SFe1nUFkkKHG5j",
-            },
-            "pro": {
-                "name": "Pro Premium",
-                "description": "Unlimited summaries + Audio versions",
-                "summaries_limit": -1,  # unlimited
-                "duration_days": 30,
-                "features": [
-                    "Unlimited summaries",
-                    "Text & Audio summaries",
-                    "Priority processing",
-                ],
-                "stripe_product_id": "prod_SFe2WqvSrS2sA7",
-            },
-        }
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(PaymentProcessor, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self, bot=None):
+        """Initialize payment processor with required services."""
+        if not hasattr(self, "initialized"):
+            self.logger = logging.getLogger("payment_processor")
+            self.db = db_manager
+            self.metrics = metrics_collector
+            self.stripe = StripeService(STRIPE_CONFIG["secret_key"])
+            self.nowpayments = NOWPaymentsService()
+            self.subscription_manager = SubscriptionManager()
+            self.premium_tiers = STRIPE_CONFIG["tiers"]
+            self.initialized = True
+            
+        # Always update bot instance if provided
+        if bot is not None:
+            self.bot = bot
+        elif not hasattr(self, "bot"):
+            self.bot = None
 
         # TON payments configuration
         self.ton_wallets = {
@@ -56,7 +47,7 @@ class PaymentProcessor:
         }
 
     async def create_stripe_payment(
-        self, tier: str, user_id: int, chat_id: int, currency: str = "USD"
+        self, tier: str, user_id: int, chat_id: int
     ) -> Tuple[bool, Dict]:
         """Create a Stripe payment session."""
         try:
@@ -68,26 +59,24 @@ class PaymentProcessor:
 
             if not product_id:
                 return False, {
-                    "error": f"Currency {currency} not supported for Stripe payments"
+                    "error": "Stripe product ID not configured for this tier"
                 }
 
             # Create Stripe checkout session using StripeService
             success, result = await self.stripe.create_checkout_session(
-                product_id=product_id,
-                user_id=user_id,
-                chat_id=chat_id
+                product_id=product_id, user_id=user_id, chat_id=chat_id, tier=tier
             )
 
             if not success:
+                self.logger.error(f"Failed to create Stripe checkout session: {result}")
                 return False, result
 
             # Log payment attempt
             self.db.log_payment_attempt(
                 user_id=user_id,
-                chat_id=chat_id,
                 tier=tier,
-                amount=tier_info["price"],
-                currency=currency,
+                amount=0,  # Amount will be determined by the tier
+                currency="USD",
                 payment_type="stripe",
             )
 
@@ -97,85 +86,191 @@ class PaymentProcessor:
             self.logger.error(f"Error creating Stripe payment: {str(e)}")
             return False, {"error": str(e)}
 
-            
-    
     async def handle_stripe_webhook(self, event_data: Dict) -> Tuple[bool, str]:
         """Handle Stripe webhook events."""
         try:
             event_type = event_data["type"]
             event_object = event_data["data"]["object"]
-            
-            # Handle subscription events
-            if event_type in ["customer.subscription.created", "customer.subscription.updated"]:
-                # Get user_id from customer metadata
-                customer = self.stripe.get_customer_from_subscription(event_object["id"])
-                if not customer:
-                    return False, "Could not retrieve customer data"
-                
-                user_id = int(customer.metadata.get("user_id"))
-                
-                # Find tier based on product ID
-                product_id = event_object["items"]["data"][0]["price"]["product"]
-                # Get tier from product
-                subscription = self.stripe.get_subscription(event_object["id"])
-                if not subscription:
-                    return False, "Could not retrieve subscription data"
-                
-                product_id = subscription.items.data[0].price.product
-                tier = next(
-                    (k for k, v in self.premium_tiers.items() 
-                     if v["stripe_product_id"] == product_id),
-                    None
-                )
-                
-                if not tier:
-                    return False, "Invalid product ID"
-                
-                # Update subscription and activate if needed
-                await self.subscription_manager.handle_subscription_updated(event_object, user_id)
-                if event_object["status"] in ["active", "trialing"]:
-                    await self.subscription_manager.activate_subscription(user_id, tier, event_object)
-                
-                return True, f"Subscription {event_object['status']} processed"
-                
+
+            if event_type in [
+                "customer.subscription.created",
+                "customer.subscription.updated",
+            ]:
+                return await self._handle_subscription_event(event_object)
+
             elif event_type == "customer.subscription.deleted":
-                # Handle subscription cancellation
-                customer = self.stripe.get_customer_from_subscription(event_object["id"])
-                if not customer:
-                    return False, "Could not retrieve customer data"
-                
-                user_id = int(customer.metadata.get("user_id"))
-                if not user_id:
-                    return False, "No user_id in customer metadata"
-                
-                await self.subscription_manager.handle_subscription_ended(event_object, user_id)
-                return True, "Subscription cancelled"
-                
+                return await self._handle_subscription_deleted(event_object)
+
             elif event_type == "checkout.session.completed":
-                # Handle successful checkout
-                session = event_object
-                user_id = int(session["metadata"].get("user_id"))
-                chat_id = int(session["metadata"].get("chat_id"))
-                
-                if user_id and chat_id:
-                    # Send success message to user
-                    success_message = "🎉 Payment successful! Your premium features are now active."
-                    try:
-                        await self.bot.send_message(chat_id=chat_id, text=success_message)
-                    except TelegramError as e:
-                        self.logger.error(f"Failed to send success message: {str(e)}")
-                    
-                    return True, "Checkout session completed successfully"
-                
-                return False, "Missing user_id or chat_id in metadata"
-            
+                return await self._handle_checkout_completed(event_object)
+
             return True, "Event type not handled"
+
         except Exception as e:
             self.logger.error(f"Error handling Stripe webhook: {str(e)}")
             return False, str(e)
 
+    async def _handle_subscription_event(self, subscription_data: Dict) -> Tuple[bool, str]:
+        """Handle subscription created/updated events."""
+        try:
+            # Get customer and user data
+            customer = self.stripe.get_customer_from_subscription(subscription_data["id"])
+            if not customer:
+                return False, "Could not retrieve customer data"
+
+            user_id = int(customer["metadata"]["user_id"])
+            chat_id = int(customer["metadata"]["chat_id"])
+
+            # Get tier from product
+            tier = await self._get_tier_from_subscription(subscription_data)
+            if not tier:
+                return False, "Invalid product ID"
+
+            # Update user's premium status
+            await self._update_premium_status(user_id, subscription_data, tier)
+
+            # Update subscription and activate if needed
+            await self.subscription_manager.handle_subscription_updated(
+                subscription_data, user_id
+            )
+
+            # Activate subscription if active/trialing
+            if subscription_data["status"] in ["active", "trialing"]:
+                await self.subscription_manager.activate_subscription(
+                    subscription_data["id"], user_id
+                )
+
+            return True, f"Subscription {subscription_data['status']} processed"
+
+        except Exception as e:
+            self.logger.error(f"Error handling subscription event: {str(e)}")
+            return False, str(e)
+
+    async def _handle_subscription_deleted(self, event_object: Dict) -> Tuple[bool, str]:
+        """Handle subscription cancellation events."""
+        try:
+            customer = self.stripe.get_customer_from_subscription(event_object["id"])
+            if not customer:
+                return False, "Could not retrieve customer data"
+
+            user_id = int(customer["metadata"]["user_id"])
+            if not user_id:
+                return False, "No user_id in customer metadata"
+
+            await self.subscription_manager.handle_subscription_ended(
+                event_object, user_id
+            )
+            return True, "Subscription cancelled"
+
+        except Exception as e:
+            self.logger.error(f"Error handling subscription deletion: {str(e)}")
+            return False, str(e)
+
+    async def _handle_checkout_completed(self, session: Dict) -> Tuple[bool, str]:
+        """Handle successful checkout session completion."""
+        try:
+            user_id = int(session["metadata"]["user_id"])
+            chat_id = int(session["metadata"]["chat_id"])
+
+            if user_id and chat_id:
+                try:
+                    # First update premium status
+                    tier = session["metadata"]["tier"]
+                    if tier:
+                        try:
+                            # Get subscription details
+                            subscription_id = session.get("subscription")
+                            if subscription_id:
+                                subscription = self.stripe.get_subscription(subscription_id)
+                                self.logger.info(f"Subscription data: {subscription}")
+                                current_period_end = subscription["current_period_end"]
+                                self.logger.info(f"Current period end: {current_period_end}")
+                                
+                                await self.db.update_premium_status(
+                                    user_id=user_id,
+                                    premium_data={
+                                        "tier": tier,
+                                        "active": True,
+                                        "expiry_date": current_period_end,
+                                        "summaries_limit": self.premium_tiers[tier]["summaries_limit"],
+                                        "subscription_id": subscription_id
+                                    }
+                                )
+                        except KeyError as e:
+                            self.logger.error(f"Missing key in subscription data: {e}")
+                            return False, f"Missing subscription data: {e}"
+                        except Exception as e:
+                            self.logger.error(f"Error updating premium status: {str(e)}")
+                            return False, str(e)
+
+                    # Then send success message
+                    user_lang = await self.db.get_user_language(chat_id)
+                    language_code = user_lang or "en"
+                    message = PaymentSuccessKeyboard.get_success_message(language_code)
+                    keyboard = PaymentSuccessKeyboard.get_keyboard(language_code)
+                    
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=message,
+                        parse_mode="MarkdownV2",
+                        reply_markup=keyboard
+                    )
+                    
+                    return True, "Checkout session completed successfully"
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to send success message: {str(e)}")
+                    return False, str(e)
+
+            return False, "Missing user_id or chat_id in metadata"
+
+        except Exception as e:
+            self.logger.error(f"Error handling checkout completion: {str(e)}")
+            return False, str(e)
+
+    async def _get_tier_from_subscription(self, subscription_data: Dict) -> Optional[str]:
+        """Determine the tier based on the subscription product ID."""
+        try:
+            product_id = subscription_data["plan"]["product"]
+            return next(
+                (
+                    k
+                    for k, v in self.premium_tiers.items()
+                    if v["stripe_product_id"] == product_id
+                ),
+                None,
+            )
+        except Exception as e:
+            self.logger.error(f"Error getting tier from subscription: {str(e)}")
+            return None
+
+    async def _update_premium_status(self, user_id: int, subscription_data: Dict, tier: str) -> None:
+        """Update user's premium status in the database."""
+        try:
+            current_period_end = subscription_data.get("current_period_end")
+            subscription_id = subscription_data.get("id")
+
+            await self.db.update_premium_status(
+                user_id=user_id,
+                premium_data={
+                    "tier": tier,
+                    "active": True,
+                    "expiry_date": current_period_end,
+                    "summaries_limit": self.premium_tiers[tier]["summaries_limit"],
+                    "subscription_id": subscription_id
+                }
+            )
+        except Exception as e:
+            self.logger.error(f"Error updating premium status: {str(e)}")
+            raise
+
     async def create_payment(
-        self, tier: str, user_id: int, chat_id: int, provider: str = "stripe", currency: str = "USD"
+        self,
+        tier: str,
+        user_id: int,
+        chat_id: int,
+        provider: str = "stripe",
+        currency: str = "USD",
     ) -> Tuple[bool, Dict]:
         """Create a payment invoice for the specified tier using the selected payment provider."""
         try:
@@ -190,7 +285,7 @@ class PaymentProcessor:
                 "title": f"{tier_info['name']} ({provider_info['name']})",
                 "description": tier_info["description"],
                 "payload": f"premium_{tier}_{user_id}_{provider}",
-                "provider_token": self.provider_token,
+                "provider_token": PAYMENT_PROVIDER_TOKEN,
                 "currency": currency,
                 "prices": [LabeledPrice(tier_info["name"], price)],
             }
@@ -270,65 +365,6 @@ class PaymentProcessor:
             self.logger.error(f"Error activating premium: {str(e)}")
             raise
 
-    async def check_premium_status(self, user_id: int) -> Dict:
-        """Check user's premium status and remaining quota."""
-        try:
-            premium_data = self.db.get_premium_status(user_id)
-
-            # Log the raw data we get from database
-            self.logger.info(
-                f"Raw premium data from DB for user {user_id}: {premium_data}"
-            )
-
-            # Super simple check - if no data or not active or free tier, return free tier
-            if (
-                not premium_data
-                or not premium_data.get("active")
-                or premium_data.get("tier") == "free"
-            ):
-                self.logger.info(
-                    f"User {user_id} is on free tier. Active: {premium_data.get('active') if premium_data else None}, Tier: {premium_data.get('tier') if premium_data else None}"
-                )
-                return {
-                    "active": True,
-                    "tier": "free",
-                    "summaries_limit": 3,
-                    "summaries_used": (
-                        premium_data.get("summaries_used", 0) if premium_data else 0
-                    ),
-                    "audio_used": (
-                        premium_data.get("audio_used", 0) if premium_data else 0
-                    ),
-                    "total_processing_time": (
-                        premium_data.get("total_processing_time", 0)
-                        if premium_data
-                        else 0
-                    ),
-                    "activation_date": None,
-                    "expiry_date": None,
-                }
-
-            # If we get here, user has an active paid subscription
-            self.logger.info(
-                f"User {user_id} has active paid subscription. Tier: {premium_data.get('tier')}"
-            )
-            return premium_data
-
-        except Exception as e:
-            self.logger.error(
-                f"Error checking premium status for user {user_id}: {str(e)}"
-            )
-            return {
-                "active": True,
-                "tier": "free",
-                "summaries_limit": 3,
-                "summaries_used": 0,
-                "audio_used": 0,
-                "total_processing_time": 0,
-                "activation_date": None,
-                "expiry_date": None,
-            }
-
     async def deactivate_premium(self, user_id: int) -> None:
         """Deactivate premium features for the user."""
         try:
@@ -401,34 +437,32 @@ class PaymentProcessor:
             payment_status = event_data.get("payment_status")
             payment_id = event_data.get("payment_id")
             order_id = event_data.get("order_id")
-            
+
             if not all([payment_status, payment_id, order_id]):
                 return False, "Missing required webhook data"
-            
+
             # Parse order_id to get user_id and tier
             try:
                 user_id, tier, _ = order_id.split("_")
                 user_id = int(user_id)
             except (ValueError, AttributeError):
                 return False, "Invalid order_id format"
-            
+
             if payment_status == "finished":
                 # Activate subscription
                 await self.subscription_manager.activate_subscription(
-                    user_id=user_id,
-                    tier=tier,
-                    payment_data=event_data
+                    user_id=user_id, tier=tier, payment_data=event_data
                 )
-                
+
                 # Send success message
                 try:
                     success_message = "🎉 Your crypto payment has been confirmed! Your subscription is now active."
                     await self.bot.send_message(chat_id=user_id, text=success_message)
                 except TelegramError as e:
                     self.logger.error(f"Failed to send success message: {str(e)}")
-                
+
                 return True, "Payment processed successfully"
-                
+
             elif payment_status in ["failed", "expired"]:
                 # Handle failed payment
                 try:
@@ -436,11 +470,76 @@ class PaymentProcessor:
                     await self.bot.send_message(chat_id=user_id, text=failure_message)
                 except TelegramError as e:
                     self.logger.error(f"Failed to send failure message: {str(e)}")
-                
+
                 return True, "Payment failure handled"
-            
+
             return True, f"Payment status {payment_status} not handled"
-            
+
         except Exception as e:
             self.logger.error(f"Error handling NOWPayments webhook: {str(e)}")
             return False, str(e)
+
+    async def cancel_subscription(
+        self, user_id: int, cancel_at_period_end: bool = True
+    ) -> Tuple[bool, str]:
+        """Cancel a user's subscription.
+
+        Args:
+            user_id: The ID of the user whose subscription to cancel
+            cancel_at_period_end: If True, subscription will remain active until the end of the period
+                                If False, subscription will be cancelled immediately
+
+        Returns:
+            Tuple[bool, str]: Success status and result/error message
+        """
+        try:
+            # Get user's subscription details
+            subscription = self.db.get_user_subscription(user_id)
+            if not subscription:
+                return False, "No active subscription found"
+
+            subscription_id = subscription.get("subscription_id")
+            payment_provider = subscription.get("payment_provider", "stripe")
+
+            # Cancel subscription with the appropriate payment provider
+            if payment_provider == "stripe":
+                success, result = await self.stripe.cancel_subscription(
+                    subscription_id=subscription_id,
+                    cancel_at_period_end=cancel_at_period_end,
+                )
+            elif payment_provider == "nowpayments":
+                success, result = await self.nowpayments.cancel_subscription(
+                    subscription_id=subscription_id,
+                    cancel_at_period_end=cancel_at_period_end,
+                )
+            else:
+                return False, f"Unsupported payment provider: {payment_provider}"
+
+            if not success:
+                return (
+                    False,
+                    f"Failed to cancel subscription: {result.get('error', 'Unknown error')}",
+                )
+
+            # Update subscription status in database
+            self.db.cancel_subscription(
+                user_id, cancel_at_period_end=cancel_at_period_end
+            )
+
+            # Log cancellation
+            self.logger.info(f"Subscription cancelled for user {user_id}")
+            self.metrics.log_subscription_cancelled(
+                user_id=user_id,
+                payment_provider=payment_provider,
+                cancel_at_period_end=cancel_at_period_end,
+            )
+
+            return True, "Subscription cancelled successfully"
+
+        except Exception as e:
+            self.logger.error(f"Error cancelling subscription: {str(e)}")
+            return False, str(e)
+
+
+# Create singleton instance
+payment_processor = PaymentProcessor()

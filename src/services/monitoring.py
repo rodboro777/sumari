@@ -1,18 +1,30 @@
+"""Monitoring service for tracking system health and performance."""
+
 import logging
 from typing import Dict, Optional
 from datetime import datetime, timedelta
-import json
-from src.database.db_manager import DatabaseManager
-
+from src.database import db_manager
+from src.logging import metrics_collector
 
 class MonitoringService:
-    def __init__(self, db_manager: DatabaseManager):
-        self.db = db_manager
-        self.logger = logging.getLogger("monitoring")
-        self._setup_logging()
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(MonitoringService, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        """Initialize monitoring service."""
+        if not hasattr(self, 'initialized'):
+            self.db = db_manager
+            self.metrics = metrics_collector
+            self.logger = logging.getLogger("monitoring")
+            self._setup_logging()
+            self.initialized = True
 
     def _setup_logging(self):
-        """Configure logging settings."""
+        """Configure logging for the monitoring service."""
         formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
@@ -60,6 +72,15 @@ class MonitoringService:
             self.db.log_action(user_id, "error", error_details)
 
         self.logger.error(f"Error occurred: {error_type} - {error_message}")
+
+    def log_error(self, component: str, error_msg: str) -> None:
+        """Log an error to the monitoring system."""
+        try:
+            self.logger.error(f"{component} error: {error_msg}")
+            # Add to error collection in Firestore
+            self.db.log_error(component, error_msg)
+        except Exception as e:
+            print(f"Error logging to monitoring service: {e}")
 
     def get_daily_stats(self) -> Dict:
         """Get daily usage statistics."""
@@ -153,3 +174,6 @@ class MonitoringService:
         except Exception as e:
             self.logger.error(f"Error checking user activity: {str(e)}")
             return {"user_id": user_id, "error": str(e)}
+
+# Create singleton instance
+monitoring_service = MonitoringService()

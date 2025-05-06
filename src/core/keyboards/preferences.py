@@ -1,258 +1,241 @@
 """Preferences-related keyboard layouts."""
 
-from typing import Dict
+from typing import Dict, List
 from telegram import InlineKeyboardMarkup
 
 from .base import create_keyboard, ButtonData
+from src.core.localization import get_message
 
 PREFERENCES_BUTTONS = {
-    "language": {
-        "text": {"en": "🌐 Interface Language", "ru": "🌐 Язык интерфейса"},
-        "callback_data": "show_language_from_prefs",
+    "summary_length": {
+        "callback_data": "show_summary_length",
     },
     "summary_language": {
-        "text": {"en": "📝 Summary Language", "ru": "📝 Язык резюме"},
         "callback_data": "show_summary_language",
     },
-    "summary_length": {
-        "text": {"en": "📏 Summary Length", "ru": "📏 Длина резюме"},
-        "callback_data": "show_length_options",
-    },
-    "audio_settings": {
-        "text": {"en": "🎧 Audio Settings", "ru": "🎧 Настройки аудио"},
-        "callback_data": "audio_settings",
+    "voice_settings": {
+        "callback_data": "show_voice_settings",
     },
     "back": {
-        "text": {"en": "⬅️ Back", "ru": "⬅️ Назад"},
         "callback_data": "back_to_menu",
     },
 }
 
 LANGUAGE_OPTIONS = {
-    "en": {
-        "text": {"en": "🇬🇧 English", "ru": "🇬🇧 Английский"},
-        "callback_data": "lang_en",
-    },
-    "ru": {
-        "text": {"en": "🇷🇺 Russian", "ru": "🇷🇺 Русский"},
-        "callback_data": "lang_ru",
-    },
-    "es": {
-        "text": {"en": "🇪🇸 Spanish", "ru": "🇪🇸 Испанский"},
-        "callback_data": "lang_es",
-    },
-    "fr": {
-        "text": {"en": "🇫🇷 French", "ru": "🇫🇷 Французский"},
-        "callback_data": "lang_fr",
-    },
-    "de": {
-        "text": {"en": "🇩🇪 German", "ru": "🇩🇪 Немецкий"},
-        "callback_data": "lang_de",
-    },
-    "it": {
-        "text": {"en": "🇮🇹 Italian", "ru": "🇮🇹 Итальянский"},
-        "callback_data": "lang_it",
-    },
-    "pt": {
-        "text": {"en": "🇵🇹 Portuguese", "ru": "🇵🇹 Португальский"},
-        "callback_data": "lang_pt",
-    },
-    "nl": {
-        "text": {"en": "🇳🇱 Dutch", "ru": "🇳🇱 Голландский"},
-        "callback_data": "lang_nl",
-    },
-    "pl": {
-        "text": {"en": "🇵🇱 Polish", "ru": "🇵🇱 Польский"},
-        "callback_data": "lang_pl",
-    },
-    "uk": {
-        "text": {"en": "🇺🇦 Ukrainian", "ru": "🇺🇦 Украинский"},
-        "callback_data": "lang_uk",
-    },
-    "tr": {
-        "text": {"en": "🇹🇷 Turkish", "ru": "🇹🇷 Турецкий"},
-        "callback_data": "lang_tr",
-    },
-    "ar": {
-        "text": {"en": "🇸🇦 Arabic", "ru": "🇸🇦 Арабский"},
-        "callback_data": "lang_ar",
-    },
-    "hi": {
-        "text": {"en": "🇮🇳 Hindi", "ru": "🇮🇳 Хинди"},
-        "callback_data": "lang_hi",
-    },
-    "bn": {
-        "text": {"en": "🇧🇩 Bengali", "ru": "🇧🇩 Бенгальский"},
-        "callback_data": "lang_bn",
-    },
-    "ja": {
-        "text": {"en": "🇯🇵 Japanese", "ru": "🇯🇵 Японский"},
-        "callback_data": "lang_ja",
-    },
-    "ko": {
-        "text": {"en": "🇰🇷 Korean", "ru": "🇰🇷 Корейский"},
-        "callback_data": "lang_ko",
-    },
-    "zh": {
-        "text": {"en": "🇨🇳 Chinese", "ru": "🇨🇳 Китайский"},
-        "callback_data": "lang_zh",
-    },
+    "en": "🇬🇧 English",
+    "ru": "🇷🇺 Русский",
+    "es": "🇪🇸 Español",
+    "fr": "🇫🇷 Français",
+    "de": "🇩🇪 Deutsch",
+    "it": "🇮🇹 Italiano",
+    "pt": "🇵🇹 Português",
+    "nl": "🇳🇱 Nederlands",
+    "pl": "🇵🇱 Polski",
+    "uk": "🇺🇦 Українська",
+    "tr": "🇹🇷 Türkçe",
+    "ar": "🇸🇦 العربية",
+    "hi": "🇮🇳 हिन्दी",
+    "bn": "🇧🇩 বাংলা",
+    "id": "🇮🇩 Indonesia",
+    "ja": "🇯🇵 日本語",
+    "ko": "🇰🇷 한국어",
+    "th": "🇹🇭 ไทย",
+    "vi": "🇻🇳 Tiếng Việt",
+    "zh": "🇨🇳 中文",
 }
 
-LENGTH_OPTIONS = {
-    "short": {
-        "text": {"en": "📄 Short", "ru": "📄 Краткое"},
-        "callback_data": "set_length_short",
-    },
-    "medium": {
-        "text": {"en": "📑 Medium", "ru": "📑 Среднее"},
-        "callback_data": "set_length_medium",
-    },
-    "detailed": {
-        "text": {"en": "📚 Detailed", "ru": "📚 Подробное"},
-        "callback_data": "set_length_detailed",
-    },
-}
-
-AUDIO_OPTIONS = {
-    "enabled": {
-        "text": {"en": "🔊 Enable Audio", "ru": "🔊 Включить аудио"},
-        "callback_data": "set_audio_enabled",
-    },
-    "disabled": {
-        "text": {"en": "🔇 Disable Audio", "ru": "🔇 Отключить аудио"},
-        "callback_data": "set_audio_disabled",
-    },
-}
-
-VOICE_GENDER_OPTIONS = {
-    "male": {
-        "text": {"en": "👨 Male Voice", "ru": "👨 Мужской голос"},
-        "callback_data": "set_voice_male",
-    },
-    "female": {
-        "text": {"en": "👩 Female Voice", "ru": "👩 Женский голос"},
-        "callback_data": "set_voice_female",
-    },
+MENU_LANGUAGE_OPTIONS = {
+    "en": "🇬🇧 English",
+    "ru": "🇷🇺 Русский",
 }
 
 
 def create_preferences_keyboard(
     language: str, is_pro: bool = False
 ) -> InlineKeyboardMarkup:
-    """Create keyboard for preferences menu."""
+    """Create preferences menu keyboard.
+
+    Args:
+        language: Interface language code
+        is_pro: Whether user has pro status for showing voice settings
+    """
     buttons = [
-        [PREFERENCES_BUTTONS["language"]],
-        [PREFERENCES_BUTTONS["summary_language"]],
-        [PREFERENCES_BUTTONS["summary_length"]],
+        [
+            {
+                "text": get_message("btn_pref_summary_length", language),
+                "callback_data": PREFERENCES_BUTTONS["summary_length"]["callback_data"],
+            }
+        ],
+        [
+            {
+                "text": get_message("btn_pref_summary_language", language),
+                "callback_data": PREFERENCES_BUTTONS["summary_language"][
+                    "callback_data"
+                ],
+            }
+        ],
     ]
 
-    # Add pro-only buttons if user is pro
+    # Only show voice settings for pro users
     if is_pro:
-        buttons.append([PREFERENCES_BUTTONS["audio_settings"]])
+        buttons.append(
+            [
+                {
+                    "text": get_message("btn_pref_voice_settings", language),
+                    "callback_data": PREFERENCES_BUTTONS["voice_settings"][
+                        "callback_data"
+                    ],
+                }
+            ]
+        )
 
-    buttons.append([PREFERENCES_BUTTONS["back"]])
+    buttons.append(
+        [
+            {
+                "text": get_message("btn_pref_back", language),
+                "callback_data": PREFERENCES_BUTTONS["back"]["callback_data"],
+            }
+        ]
+    )
+
     return create_keyboard(buttons, language)
 
 
 def create_language_selection_keyboard(
-    language: str, setting_type: str = "interface", source: str = "preferences"
+    language: str, source: str = "main_menu", current_lang: str = None
 ) -> InlineKeyboardMarkup:
-    """Create keyboard for language selection.
+    """Create language selection keyboard.
 
     Args:
-        language: Interface language
-        setting_type: Type of language setting ('interface' or 'summary')
-        source: Where the menu was opened from ('preferences' or 'main_menu')
+        language: Interface language code
+        source: Source menu to return to
+        current_lang: Currently selected language (to show checkmark)
     """
-    # For interface language, only show English and Russian
-    if setting_type == "interface":
-        buttons = [
-            [LANGUAGE_OPTIONS["en"]],
-            [LANGUAGE_OPTIONS["ru"]],
+    buttons = []
+    row = []
+
+    # Add all languages in a grid layout (2 per row)
+    for i, (lang_code, lang_name) in enumerate(LANGUAGE_OPTIONS.items()):
+        # Add checkmark if this is the selected language
+        display_name = f"✔️ {lang_name}" if lang_code == current_lang else lang_name
+
+        # Create button with appropriate callback
+        button = {
+            "text": display_name,
+            "callback_data": (
+                f"set_summary_lang_{lang_code}"
+                if source == "preferences"
+                else f"lang_{lang_code}"
+            ),
+        }
+        row.append(button)
+        if len(row) == 2 or i == len(LANGUAGE_OPTIONS) - 1:
+            buttons.append(row)
+            row = []
+
+    # Add back button with correct callback
+    back_callback = "back_to_preferences" if source == "preferences" else "back_to_menu"
+    buttons.append(
+        [
+            {
+                "text": get_message("btn_back", language),
+                "callback_data": back_callback,
+            }
         ]
-    else:
-        # For summary, show all supported languages in a grid
-        buttons = []
-        row = []
-        for i, (lang_code, lang_data) in enumerate(LANGUAGE_OPTIONS.items()):
-            row.append(lang_data)
-            if len(row) == 2 or i == len(LANGUAGE_OPTIONS) - 1:
-                buttons.append(row)
-                row = []
-
-    # Add back button with appropriate callback based on source
-    back_callback = "back_to_menu" if source == "main_menu" else "back_to_preferences"
-    buttons.append([{**PREFERENCES_BUTTONS["back"], "callback_data": back_callback}])
-
-    # Update callback data based on setting type
-    if setting_type != "interface":
-        for row in buttons[:-1]:  # Skip back button
-            for button in row:
-                original_lang = button["callback_data"].split("_")[-1]
-                button["callback_data"] = f"set_{setting_type}_lang_{original_lang}"
+    )
 
     return create_keyboard(buttons, language)
 
 
-def create_length_selection_keyboard(language: str) -> InlineKeyboardMarkup:
-    """Create keyboard for summary length selection."""
-    buttons = [
-        [LENGTH_OPTIONS["short"]],
-        [LENGTH_OPTIONS["medium"]],
-        [LENGTH_OPTIONS["detailed"]],
-        [{**PREFERENCES_BUTTONS["back"], "callback_data": "back_to_preferences"}],
-    ]
-    return create_keyboard(buttons, language)
-
-
-def create_audio_settings_keyboard(
-    language: str, audio_enabled: bool = False, current_gender: str = "female"
+def create_summary_length_keyboard(
+    language: str, current_length: str = None
 ) -> InlineKeyboardMarkup:
-    """Create keyboard for audio settings.
+    """Create summary length selection keyboard.
 
     Args:
-        language: Interface language
-        audio_enabled: Whether audio is currently enabled
-        current_gender: Current voice gender selection ('male' or 'female')
+        language: Interface language code
+        current_length: Currently selected length (to show checkmark)
     """
-    buttons = [
-        # Audio toggle button
-        [AUDIO_OPTIONS["disabled" if audio_enabled else "enabled"]],
-        # Voice gender selection - show both options, highlight current
-        [
-            {
-                **VOICE_GENDER_OPTIONS["male"],
-                "text": (
-                    {"en": "👨 Male Voice ✓", "ru": "👨 Мужской голос ✓"}
-                    if current_gender == "male"
-                    else VOICE_GENDER_OPTIONS["male"]["text"]
-                ),
-            },
-            {
-                **VOICE_GENDER_OPTIONS["female"],
-                "text": (
-                    {"en": "👩 Female Voice ✓", "ru": "👩 Женский голос ✓"}
-                    if current_gender == "female"
-                    else VOICE_GENDER_OPTIONS["female"]["text"]
-                ),
-            },
-        ],
-        # Language selection button
-        [
-            {
-                "text": {"en": "🌐 Voice Language", "ru": "🌐 Язык голоса"},
-                "callback_data": "show_voice_language",
-            }
-        ],
-        # Demo button
-        [
-            {
-                "text": {"en": "🎧 Try Voice", "ru": "🎧 Прослушать"},
-                "callback_data": "voice_demo",
-            }
-        ],
-        # Back button
-        [{**PREFERENCES_BUTTONS["back"], "callback_data": "back_to_preferences"}],
+    # Define length options with their callbacks
+    length_options = [
+        {
+            "text": get_message("btn_summary_short", language),
+            "callback_data": "set_length_short",
+            "value": "short",
+        },
+        {
+            "text": get_message("btn_summary_medium", language),
+            "callback_data": "set_length_medium",
+            "value": "medium",
+        },
+        {
+            "text": get_message("btn_summary_detailed", language),
+            "callback_data": "set_length_detailed",
+            "value": "detailed",
+        },
     ]
+
+    buttons = []
+    row = []
+
+    # Add length options with checkmarks
+    for option in length_options:
+        display_text = (
+            f"✅ {option['text']}"
+            if option["value"] == current_length
+            else option["text"]
+        )
+        button = {"text": display_text, "callback_data": option["callback_data"]}
+        row.append(button)
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+
+    # Add any remaining buttons
+    if row:
+        buttons.append(row)
+
+    # Add back button
+    buttons.append(
+        [
+            {
+                "text": get_message("btn_back", language),
+                "callback_data": "back_to_preferences",
+            }
+        ]
+    )
+
+    return create_keyboard(buttons, language)
+
+
+def create_menu_language_selection_keyboard(
+    language: str, current_lang: str = None
+) -> InlineKeyboardMarkup:
+    """Create menu language selection keyboard with only English and Russian options.
+
+    Args:
+        language: Interface language code
+        current_lang: Currently selected language (to show checkmark)
+    """
+    buttons = []
+
+    # Add language options with checkmarks
+    for lang_code, lang_name in MENU_LANGUAGE_OPTIONS.items():
+        display_name = f"✅ {lang_name}" if lang_code == current_lang else lang_name
+        button = {
+            "text": display_name,
+            "callback_data": f"lang_{lang_code}",
+        }
+        buttons.append([button])
+
+    # Add back button
+    buttons.append(
+        [
+            {
+                "text": get_message("btn_back", language),
+                "callback_data": "back_to_menu",
+            }
+        ]
+    )
+
     return create_keyboard(buttons, language)

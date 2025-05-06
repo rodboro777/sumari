@@ -1,56 +1,86 @@
 """Audio processing service for generating audio summaries using Google Cloud Text-to-Speech."""
 
 import logging
-import asyncio
-from typing import Dict, Optional, Tuple
-import os
+from typing import Dict, Tuple
 from datetime import datetime
 from google.cloud import storage
 from google.cloud import texttospeech
-from src.database.db_manager import DatabaseManager
-from src.services.monitoring import MonitoringService
-from src.config import GCP_BUCKET_NAME
+from src.database import db_manager
+from src.services import monitoring_service
+from src.logging import metrics_collector
+from src.config import GCP_BUCKET_NAME, GOOGLE_APPLICATION_CREDENTIALS
 from pathlib import Path
 import aiohttp
 import time
 
+
 class AudioProcessor:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(AudioProcessor, cls).__new__(cls)
+        return cls._instance
+
     def __init__(
         self,
-        db_manager: DatabaseManager,
-        monitoring: MonitoringService,
     ):
         """Initialize audio processor with required dependencies."""
-        self.db = db_manager
-        self.monitoring = monitoring
-        self.logger = logging.getLogger("audio_processor")
-        self.gcp_bucket_name = GCP_BUCKET_NAME
-        
-        # Get path to credentials file relative to src directory
-        src_dir = Path(__file__).parent.parent  # This gets us to the src directory
-        credentials_path = src_dir.parent / 'sumari-458514-f6d0db13e3ec.json'  # Go up one level to project root
-        
-        try:
-            self.logger.info(f"Using GCP credentials from: {credentials_path}")
-            # Initialize Storage client
-            self.storage_client = storage.Client.from_service_account_json(str(credentials_path))
-            self.bucket = self.storage_client.bucket(self.gcp_bucket_name)
+        if not hasattr(self, 'initialized'):
+            self.logger = logging.getLogger("audio_processor")
+            self.gcp_bucket_name = GCP_BUCKET_NAME
+            self.metrics = metrics_collector
+            self.db = db_manager
+            self.monitoring = monitoring_service
             
-            # Initialize Text-to-Speech client
-            self.tts_client = texttospeech.TextToSpeechClient.from_service_account_json(str(credentials_path))
+            if not GOOGLE_APPLICATION_CREDENTIALS:
+                self.logger.warning("GOOGLE_APPLICATION_CREDENTIALS not set. Audio features will be disabled.")
+                self.storage_client = None
+                self.bucket = None
+                self.tts_client = None
+                self.initialized = True
+                return
             
-            # Test bucket access
-            list(self.bucket.list_blobs(max_results=1))
-            self.logger.info("Successfully connected to GCP Storage and Text-to-Speech")
+            # Get path to credentials file relative to src directory
+            src_dir = Path(__file__).parent.parent  # This gets us to the src directory
+            credentials_path = src_dir.parent / GOOGLE_APPLICATION_CREDENTIALS  # Go up one level to project root
             
-        except Exception as e:
-            self.logger.error(f"Failed to initialize GCP services: {str(e)}")
-            raise
+            try:
+                self.logger.info(f"Using GCP credentials from: {credentials_path}")
+                # Initialize Storage client
+                self.storage_client = storage.Client.from_service_account_json(str(credentials_path))
+                self.bucket = self.storage_client.bucket(self.gcp_bucket_name)
+                
+                # Initialize Text-to-Speech client
+                self.tts_client = texttospeech.TextToSpeechClient.from_service_account_json(str(credentials_path))
+                
+                # Test bucket access
+                list(self.bucket.list_blobs(max_results=1))
+                self.logger.info("Successfully connected to GCP Storage and Text-to-Speech")
+                
+            except Exception as e:
+                self.logger.error(f"Failed to initialize GCP services: {str(e)}")
+                raise
+                
+            self.initialized = True
 
     async def generate_audio_summary(
-        self, text: str, voice: str = "en-US-Standard-D", user_id: int = 0
+        self, text: str, voice: str = "en-US-Standard-D", user_id: int = None
     ) -> Tuple[bool, Dict]:
-        """Generate audio summary using Google Cloud Text-to-Speech."""
+        """Generate audio summary using Google Cloud Text-to-Speech.
+        
+        Args:
+            text: Text to convert to speech
+            voice: Voice name to use
+            user_id: Optional user ID for tracking
+            
+        Returns:
+            Tuple of (success, data dict)
+        """
+        if not self.tts_client:
+            self.logger.warning("Audio generation requested but GCP services are disabled")
+            return False, {"error": "Audio generation is disabled"}
+        
         start_time = time.time()
         try:
             # Generate a unique filename based on text content and voice
@@ -72,6 +102,15 @@ class AudioProcessor:
                         "cached": True
                     }
                 )
+                
+                # Track TTS metrics for cached audio (no cost since it's cached)
+                self.metrics.log_tts_usage(
+                    user_id=user_id,
+                    char_count=len(text),
+                    duration=0,  # Duration unknown for cached audio
+                    success=True
+                )
+                
                 return True, {
                     "audio_url": f"https://storage.googleapis.com/{self.gcp_bucket_name}/{blob_name}",
                     "blob_name": blob_name,
@@ -125,6 +164,16 @@ class AudioProcessor:
                 }
             )
             
+            # Track TTS metrics for generated audio
+            char_count = len(text)
+            duration = len(response.audio_content) / 32000  # Approximate duration based on MP3 bitrate
+            self.metrics.log_tts_usage(
+                user_id=user_id,
+                char_count=char_count,
+                duration=duration,
+                success=True
+            )
+            
             return True, {
                 "audio_url": public_url,
                 "blob_name": blob_name,
@@ -139,12 +188,20 @@ class AudioProcessor:
             self.db.log_api_usage(
                 user_id=user_id,
                 api_name="audio_processing",
-                status="failed",
-                details={
-                    "processing_time": processing_time,
-                    "error": str(e)
-                }
+                status="error",
+                details={"error": str(e)}
             )
+            
+            # Track failed TTS attempt
+            char_count = len(text)
+            duration = 0
+            self.metrics.log_tts_usage(
+                user_id=user_id,
+                char_count=char_count,
+                duration=duration,
+                success=False
+            )
+            
             self.logger.error(f"Error generating audio summary: {str(e)}")
             return False, {"error": str(e)}
 
@@ -189,8 +246,52 @@ class AudioProcessor:
             self.logger.error(f"Error generating demo audio: {str(e)}")
             return False, {"error": str(e)}
 
+    async def generate_audio(self, text: str, user_id: int, language: str = "en") -> Tuple[str, int]:
+        """Generate audio from text using Google Cloud Text-to-Speech.
+        
+        Args:
+            text: Text to convert to speech
+            user_id: User ID
+            language: Language code (e.g. 'en', 'es')
+            
+        Returns:
+            Tuple of (audio URL, duration in seconds)
+        """
+        if not self.tts_client:
+            self.logger.warning("Audio generation requested but GCP services are disabled")
+            return None, 0
+
+        # Map language codes to appropriate voices
+        voice_map = {
+            "en": "en-US-Standard-D",  # Male voice
+            "es": "es-ES-Standard-C",  # Male voice
+            "pt": "pt-BR-Standard-B",  # Male voice
+            "hi": "hi-IN-Standard-B",  # Male voice
+            "ru": "ru-RU-Standard-D",  # Male voice
+            "ar": "ar-XA-Standard-B",  # Male voice
+            "id": "id-ID-Standard-B",  # Male voice
+            "fr": "fr-FR-Standard-D",  # Male voice
+            "de": "de-DE-Standard-D",  # Male voice
+            "tr": "tr-TR-Standard-B",  # Male voice
+            "uk": "uk-UA-Standard-A",  # Male voice
+        }
+        
+        # Get appropriate voice for language or default to English
+        voice = voice_map.get(language, "en-US-Standard-D")
+        
+        result, data = await self.generate_audio_summary(text, voice=voice, user_id=user_id)
+        
+        if not result:
+            return None, 0
+        
+        return data["audio_url"], 0
+
     def cleanup_old_audio_files(self, max_age_hours: int = 24):
         """Clean up old audio files from GCP Storage."""
+        if not self.bucket:
+            self.logger.warning("Cleanup requested but GCP services are disabled")
+            return
+            
         try:
             current_time = datetime.now()
             blobs = self.bucket.list_blobs(prefix="summaries/")

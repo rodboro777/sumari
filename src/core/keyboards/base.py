@@ -1,7 +1,8 @@
 """Base keyboard functionality and common utilities."""
 
-from typing import List, Dict, Union, Optional
+from typing import List, Dict, Union
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from src.core.localization import get_message
 
 # Type aliases
 KeyboardType = List[List[InlineKeyboardButton]]
@@ -9,23 +10,18 @@ ButtonData = Dict[str, Union[str, Dict[str, str]]]
 
 MAIN_MENU_BUTTONS = {
     "language": {
-        "text": {"en": "🌐 Language", "ru": "🌐 Язык"},
         "callback_data": "lang_menu",
     },
     "preferences": {
-        "text": {"en": "⚙️ Preferences", "ru": "⚙️ Настройки"},
         "callback_data": "preferences",
     },
     "help": {
-        "text": {"en": "❓ Help & About", "ru": "❓ Помощь и О боте"},
         "callback_data": "help",
     },
     "premium": {
-        "text": {"en": "⭐ Premium", "ru": "⭐ Премиум"},
         "callback_data": "premium",
     },
     "account": {
-        "text": {"en": "👤 My Account", "ru": "👤 Мой аккаунт"},
         "callback_data": "my_account",
     },
 }
@@ -34,9 +30,32 @@ MAIN_MENU_BUTTONS = {
 def create_main_menu_keyboard(language: str) -> InlineKeyboardMarkup:
     """Create main menu keyboard with language-specific labels."""
     buttons = [
-        [MAIN_MENU_BUTTONS["language"], MAIN_MENU_BUTTONS["preferences"]],
-        [MAIN_MENU_BUTTONS["help"], MAIN_MENU_BUTTONS["premium"]],
-        [MAIN_MENU_BUTTONS["account"]],
+        [
+            {
+                "text": get_message("btn_language", language),
+                "callback_data": MAIN_MENU_BUTTONS["language"]["callback_data"],
+            },
+            {
+                "text": get_message("btn_preferences", language),
+                "callback_data": MAIN_MENU_BUTTONS["preferences"]["callback_data"],
+            },
+        ],
+        [
+            {
+                "text": get_message("btn_help", language),
+                "callback_data": MAIN_MENU_BUTTONS["help"]["callback_data"],
+            },
+            {
+                "text": get_message("btn_premium", language),
+                "callback_data": MAIN_MENU_BUTTONS["premium"]["callback_data"],
+            },
+        ],
+        [
+            {
+                "text": get_message("btn_account", language),
+                "callback_data": MAIN_MENU_BUTTONS["account"]["callback_data"],
+            }
+        ],
     ]
     return create_keyboard(buttons, language)
 
@@ -58,20 +77,18 @@ def create_keyboard(
     for row in buttons:
         keyboard_row = []
         for button in row:
-            text = button.get("text", {}).get(
-                language, button.get("text", {}).get("en", "")
-            )
-            callback_data = button.get("callback_data", "")
-            url = button.get("url", None)
+            # Create button kwargs based on what's available
+            button_kwargs = {"text": button["text"]}
 
-            if url:
-                keyboard_row.append(InlineKeyboardButton(text=text, url=url))
-            else:
-                keyboard_row.append(
-                    InlineKeyboardButton(text=text, callback_data=callback_data)
-                )
+            # Add URL if present
+            if "url" in button:
+                button_kwargs["url"] = button["url"]
+            # Add callback_data if present and no URL
+            elif "callback_data" in button:
+                button_kwargs["callback_data"] = button["callback_data"]
+
+            keyboard_row.append(InlineKeyboardButton(**button_kwargs))
         keyboard.append(keyboard_row)
-
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -82,7 +99,7 @@ def create_back_button(
     buttons = [
         [
             {
-                "text": {"en": "⬅️ Back to Menu", "ru": "⬅️ Вернуться в меню"},
+                "text": get_message("btn_back", language),
                 "callback_data": callback_data,
             }
         ]
@@ -107,7 +124,8 @@ def create_simple_keyboard(
     for button in buttons:
         row.append(
             InlineKeyboardButton(
-                text=button["text"], callback_data=button["callback_data"]
+                text=get_message(button["text"], language),
+                callback_data=button["callback_data"],
             )
         )
 

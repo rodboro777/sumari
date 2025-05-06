@@ -1,6 +1,7 @@
 """Main bot module that initializes and runs the Telegram bot."""
 
 import asyncio
+import logging
 from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import (
@@ -10,26 +11,32 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
     PreCheckoutQueryHandler,
+    ContextTypes,
+    Defaults,
 )
 from telegram.constants import ParseMode
 
 from src.config import (
     TOKEN,
     logger,
-    GEMINI_API_KEY,
-    STRIPE_CONFIG,
     TON_CONFIG,
 )
-from src.database.db_manager import db_manager
-from src.services.video_processor import VideoProcessor
-from src.services.monitoring import MonitoringService
-from src.services.payments import PaymentProcessor
-from src.services.audio_processor import AudioProcessor
-from src.core.utils import extract_video_id
+from src.services import VideoProcessor
+from src.services import payment_processor
+from src.services import AudioProcessor
+from src.services import monitoring_service
+from src.core.utils import (
+    extract_video_id,
+    get_user_language,
+    get_user_preferences,
+)
 from src.core.localization import get_message
-from src.core.keyboards import create_main_menu_keyboard
-from src.bot.utils import get_user_language, get_user_preferences
-from src.bot.handlers.basic import (
+from src.core.keyboards import (
+    create_main_menu_keyboard,
+    create_menu_language_selection_keyboard,
+)
+from src.bot.handlers import (
+    # Command handlers
     start,
     menu_command,
     help_command,
@@ -38,81 +45,104 @@ from src.bot.handlers.basic import (
     button_callback,
     test_voice,
     test_tts,
-)
-from src.bot.handlers.payments import (
+
+    #Premium handlers
     premium_command,
-    handle_premium_callback,
-    precheckout_callback,
-    successful_payment_callback,
-)
-from src.bot.handlers.modules import (
-    handle_premium,
-    handle_payment_method,
-    handle_payment_provider,
-    handle_payment_creation,
-    handle_support_menu,
-    handle_cancel_subscription_confirm,
-    handle_cancel_subscription,
-)
 
-# Initialize services
-monitoring_service = MonitoringService(db_manager)
-video_processor = VideoProcessor(
-    db_manager=db_manager,
-    monitoring=monitoring_service,
-    gemini_api_key=GEMINI_API_KEY,
+    # Media handlers
+    handle_audio_summary,
 )
-audio_processor = AudioProcessor(
-    db_manager=db_manager,
-    monitoring=monitoring_service,
-)
-payment_processor = PaymentProcessor(
-    db_manager=db_manager,
-    stripe_secret_key=STRIPE_CONFIG["secret_key"],
-)
-
-# Update TON wallet addresses
-payment_processor.ton_wallets = {
-    "based": TON_CONFIG["based_wallet"],
-    "pro": TON_CONFIG["pro_wallet"],
-}
 
 # Flask app for webhook
 app = Flask(__name__)
 
 # Create a single application instance
-application = ApplicationBuilder().token(TOKEN).build()
+# Create bot instance
+bot = Bot(TOKEN)
+
+# Initialize the bot application
+defaults = Defaults(parse_mode=ParseMode.MARKDOWN_V2)
+application = ApplicationBuilder().token(TOKEN).defaults(defaults).build()
+
+# Initialize payment processor with bot instance
+payment_processor.bot = application.bot
+
+# Error handler
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the developer."""
+    # Log the error
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+    # Extract the error message
+    if isinstance(context.error, Exception):
+        error_msg = str(context.error)
+    else:
+        error_msg = "An unknown error occurred"
+
+    # Log to monitoring service
+    monitoring_service.log_error("telegram_bot", error_msg)
+
+    # Send message to user if possible
+    if update and isinstance(update, Update) and update.effective_chat:
+        language = get_user_language(context, update.effective_user.id)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=get_message("error_occurred", language),
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
 
 
-async def handle_message(update: Update, context):
-    """Handle incoming messages."""
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle text messages and URLs."""
     try:
-        user_id = update.effective_user.id
         text = update.message.text
+        user_id = update.effective_user.id
         language = get_user_language(context, user_id)
 
-        # Check if the message is a YouTube URL
+        # Check if it's a YouTube URL
         video_id = extract_video_id(text)
-
         if video_id:
-            # Process YouTube video
-            await video_processor.process_video(
-                video_id, user_id, get_user_preferences(context, user_id)
-            )
-        else:
-            # Send help message for invalid input
-            await update.message.reply_text(
-                get_message("invalid_url", language),
-                reply_markup=create_main_menu_keyboard(language),
+            # Show processing message
+            processing_msg = await update.message.reply_text(
+                text=get_message("processing_summary", language),
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
 
+            # Process YouTube video with both summarization methods
+            video_processor = VideoProcessor()
+            success, result = await video_processor.process_link(
+                link=f"https://www.youtube.com/watch?v={video_id}",
+                user_id=user_id,
+                language=language,
+                summary_type="both",
+            )
+
+            # Handle result
+            if success:
+                await video_processor.send_summary(
+                    chat_id=update.effective_chat.id,
+                    summary_data=result,
+                    language=language,
+                )
+            else:
+                logger.error(f"Failed to process video {video_id}: {result}")
+                await update.message.reply_text(
+                    text=get_message("error_processing", language),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+
+            # Delete processing message
+            await processing_msg.delete()
+        else:
+            logger.info(f"Received non-URL text from user {user_id}: {text[:50]}...")
+            await update.message.reply_text(
+                text=get_message("not_youtube_url", language),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=create_main_menu_keyboard(language),
+            )
     except Exception as e:
-        logger.error(f"Error handling message: {e}")
-        await update.message.reply_text(
-            get_message("error", language, error=str(e)),
-            parse_mode=ParseMode.MARKDOWN_V2,
-        )
+        logger.error(f"Error in handle_text: {str(e)}", exc_info=True)
+        raise
 
 
 # === OPTION 1: Webhook Approach ===
@@ -141,27 +171,18 @@ def add_handlers(application):
     application.add_handler(CommandHandler("test_voice", test_voice))
     application.add_handler(CommandHandler("test_tts", test_tts))
 
-    # Payment handlers
+    # Premium handlers
     application.add_handler(CommandHandler("premium", premium_command))
-    application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-    application.add_handler(
-        MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback)
-    )
-    application.add_handler(
-        CallbackQueryHandler(handle_premium_callback, pattern="^(premium_stripe_|ton_)")
-    )
 
     # General handlers
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
     )
-
-    # Store services in bot_data for access in handlers
-    application.bot_data["video_processor"] = video_processor
-    application.bot_data["audio_processor"] = audio_processor
-    application.bot_data["payment_processor"] = payment_processor
-    application.bot_data["monitoring"] = monitoring_service
+    application.add_handler(
+        CallbackQueryHandler(handle_audio_summary, pattern="^get_audio_summary$")
+    )
+    application.add_error_handler(error_handler)
 
 
 # Initialize handlers

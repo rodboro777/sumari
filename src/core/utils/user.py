@@ -1,4 +1,4 @@
-"""Utility functions for the Telegram bot."""
+"""User-related utility functions."""
 
 from typing import Dict
 from telegram.ext import ContextTypes

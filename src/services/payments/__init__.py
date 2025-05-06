@@ -1,5 +1,5 @@
-from .payment_processor import PaymentProcessor
-from .stripe_service import StripeService
-from .subscription_manager import SubscriptionManager
+"""Payments sub-package for handling payment processing and subscription management."""
 
-__all__ = ["PaymentProcessor", "StripeService", "SubscriptionManager"]
+# Imports are handled in the top-level services/__init__.py
+
+__all__ = []

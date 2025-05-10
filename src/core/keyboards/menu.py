@@ -8,24 +8,6 @@ from src.core.localization import get_message
 KeyboardType = List[List[InlineKeyboardButton]]
 ButtonData = Dict[str, Union[str, Dict[str, str]]]
 
-MAIN_MENU_BUTTONS = {
-    "language": {
-        "callback_data": "lang_menu",
-    },
-    "preferences": {
-        "callback_data": "preferences",
-    },
-    "help": {
-        "callback_data": "help",
-    },
-    "premium": {
-        "callback_data": "premium",
-    },
-    "account": {
-        "callback_data": "my_account",
-    },
-}
-
 
 def create_main_menu_keyboard(language: str) -> InlineKeyboardMarkup:
     """Create main menu keyboard with language-specific labels."""
@@ -33,27 +15,27 @@ def create_main_menu_keyboard(language: str) -> InlineKeyboardMarkup:
         [
             {
                 "text": get_message("btn_language", language),
-                "callback_data": MAIN_MENU_BUTTONS["language"]["callback_data"],
+                "callback_data": "lang_menu",
             },
             {
                 "text": get_message("btn_preferences", language),
-                "callback_data": MAIN_MENU_BUTTONS["preferences"]["callback_data"],
+                "callback_data": "preferences",
             },
         ],
         [
             {
                 "text": get_message("btn_help", language),
-                "callback_data": MAIN_MENU_BUTTONS["help"]["callback_data"],
+                "callback_data": "help",
             },
             {
                 "text": get_message("btn_premium", language),
-                "callback_data": MAIN_MENU_BUTTONS["premium"]["callback_data"],
+                "callback_data": "premium",
             },
         ],
         [
             {
                 "text": get_message("btn_account", language),
-                "callback_data": MAIN_MENU_BUTTONS["account"]["callback_data"],
+                "callback_data": "my_account",
             }
         ],
     ]

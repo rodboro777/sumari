@@ -1,23 +1,12 @@
 """Payment-related keyboard layouts."""
 
-from typing import Dict, Optional
+
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
-from .base import create_keyboard
+from src.core.keyboards.menu import create_keyboard
 from src.core.localization import get_message
 
 
-PAYMENT_BUTTONS = {
-    "stripe": {
-        "callback_data": "provider_stripe",
-    },
-    "nowpayments": {
-        "callback_data": "provider_nowpayments",
-    },
-    "back": {
-        "callback_data": "back_to_premium",
-    },
-}
 
 def create_payment_method_keyboard(language: str, tier: str) -> InlineKeyboardMarkup:
     """Create keyboard for payment method selection."""
@@ -37,7 +26,7 @@ def create_payment_method_keyboard(language: str, tier: str) -> InlineKeyboardMa
         [
             {
                 "text": get_message("btn_payment_back", language),
-                "callback_data": PAYMENT_BUTTONS["back"]["callback_data"],
+                "callback_data": "back_to_premium",
             }
         ],
     ]
@@ -67,7 +56,7 @@ def create_currency_keyboard(
         [
             {
                 "text": get_message("btn_payment_back", language),
-                "callback_data": PAYMENT_BUTTONS["back"]["callback_data"],
+                "callback_data": "back_to_premium",
             }
         ]
     )
@@ -88,7 +77,7 @@ def create_payment_link_keyboard(
         [
             InlineKeyboardButton(
                 text=get_message("btn_payment_back", language),
-                callback_data=PAYMENT_BUTTONS["back"]["callback_data"],
+                callback_data="back_to_premium",
             )
         ],
     ]

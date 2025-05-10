@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from typing import Dict, Optional
 from datetime import datetime, timedelta
 import json
 import time
 import psutil
 
-from .metrics_collector import metrics_collector
+from .metrics_collector import MetricsCollector
 
 metrics_router = APIRouter(prefix="/metrics", tags=["metrics"])
 
@@ -14,13 +14,13 @@ async def track_cloud_run_metrics_middleware(request: Request, call_next):
     start_time = time.time()
     response = await call_next(request)
     latency = time.time() - start_time
-    
+
     # Get instance metrics
     cpu_usage = psutil.cpu_percent()
     memory_usage = psutil.Process().memory_info().rss / 1024 / 1024  # MB
     
     # Track metrics
-    metrics_collector.log_cloud_run_metrics(
+    MetricsCollector().log_cloud_run_metrics(
         instance_count=1,  # Single instance for now
         request_count=1,
         memory_usage=memory_usage,
@@ -37,7 +37,7 @@ async def get_performance_metrics() -> Dict:
     cpu_usage = psutil.cpu_percent()
     memory_usage = psutil.Process().memory_info().rss / 1024 / 1024  # MB
     
-    stats = metrics_collector.get_performance_stats()
+    stats = MetricsCollector().get_performance_stats()
     stats["cloud_run"] = {
         "cpu_usage": cpu_usage,
         "memory_usage": memory_usage,
@@ -54,7 +54,7 @@ async def get_api_metrics(
     include_tts: bool = Query(True, description="Include TTS metrics")
 ) -> Dict:
     """Get comprehensive API and usage metrics"""
-    stats = metrics_collector.get_api_stats()
+    stats = MetricsCollector().get_api_stats()
     
     # Filter metrics based on query parameters
     if not include_conversions and "conversions" in stats:

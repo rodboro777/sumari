@@ -1,59 +1,11 @@
 """Premium-related keyboard layouts."""
 
-from typing import Dict, Optional
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 import logging
-from telegram import InlineKeyboardMarkup
 
-from .base import create_keyboard
-from .payment import create_payment_method_keyboard
 from src.core.localization import get_message
 
 logger = logging.getLogger(__name__)
-
-PREMIUM_BUTTONS = {
-    "extend_based": {
-        "callback_data": "extend_based",
-    },
-    "extend_pro": {
-        "callback_data": "extend_pro",
-    },
-    "upgrade_pro": {
-        "callback_data": "upgrade_pro",
-    },
-    "cancel_subscription": {
-        "callback_data": "cancel_subscription_confirm",
-    },
-    "support": {
-        "callback_data": "show_support_menu",
-    },
-    "back": {
-        "callback_data": "back_to_menu",
-    },
-}
-
-PAYMENT_BUTTONS = {
-    "stripe": {
-        "callback_data": "payment_stripe",
-    },
-    "nowpayments": {
-        "callback_data": "payment_nowpayments",
-    },
-    "back": {
-        "callback_data": "back_to_premium",
-    },
-}
-
-SUPPORT_BUTTONS = {
-    "chat_bot": {
-        "url": "https://t.me/sumari_support_bot",
-    },
-    "community": {
-        "url": "https://t.me/sumari_community",
-    },
-    "back": {
-        "callback_data": "back_to_premium",
-    },
-}
 
 
 def create_premium_options_keyboard(
@@ -63,132 +15,119 @@ def create_premium_options_keyboard(
     is_pro: bool = False,
     expired: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Create keyboard for premium options."""
+    """Create keyboard for premium options based on user's subscription status."""
     try:
         buttons = []
 
-        # Show appropriate subscription options
+        # Show subscription options for free/expired users
         if not is_subscribed or expired:
-            buttons.append(
-                [
-                    {
-                        "text": get_message("btn_premium_based", language),
-                        "callback_data": "subscribe_based",
-                    },
-                    {
-                        "text": get_message("btn_premium_pro", language),
-                        "callback_data": "subscribe_pro",
-                    },
-                ]
-            )
+            buttons.append([
+                InlineKeyboardButton(
+                    text=get_message("btn_premium_based", language),
+                    callback_data="subscribe_based"
+                ),
+                InlineKeyboardButton(
+                    text=get_message("btn_premium_pro", language),
+                    callback_data="subscribe_pro"
+                )
+            ])
 
-        # Show subscription management options
+        # Show upgrade option for based tier users
+        if is_subscribed and not expired and is_based:
+            buttons.append([
+                InlineKeyboardButton(
+                    text=get_message("btn_premium_upgrade_pro", language),
+                    callback_data="upgrade_pro"
+                )
+            ])
+
+        # Show management options for subscribed users
         if is_subscribed and not expired:
-            if is_pro:
-                buttons.append(
-                    [
-                        {
-                            "text": get_message("btn_premium_extend_pro", language),
-                            "callback_data": PREMIUM_BUTTONS["extend_pro"][
-                                "callback_data"
-                            ],
-                        }
-                    ]
+            buttons.append([
+                InlineKeyboardButton(
+                    text=get_message("btn_premium_cancel_subscription", language),
+                    callback_data="cancel_subscription"
+                ),
+                InlineKeyboardButton(
+                    text=get_message("btn_premium_support", language),
+                    callback_data="support"
                 )
-            else:
-                buttons.extend(
-                    [
-                        [
-                            {
-                                "text": get_message(
-                                    "btn_premium_extend_based", language
-                                ),
-                                "callback_data": PREMIUM_BUTTONS["extend_based"][
-                                    "callback_data"
-                                ],
-                            }
-                        ],
-                        [
-                            {
-                                "text": get_message(
-                                    "btn_premium_upgrade_pro", language
-                                ),
-                                "callback_data": PREMIUM_BUTTONS["upgrade_pro"][
-                                    "callback_data"
-                                ],
-                            }
-                        ],
-                    ]
-                )
+            ])
 
-            # Add subscription management and support buttons
-            buttons.append(
-                [
-                    {
-                        "text": get_message(
-                            "btn_premium_cancel_subscription", language
-                        ),
-                        "callback_data": PREMIUM_BUTTONS["cancel_subscription"][
-                            "callback_data"
-                        ],
-                    },
-                    {
-                        "text": get_message("btn_premium_support", language),
-                        "callback_data": PREMIUM_BUTTONS["support"]["callback_data"],
-                    },
-                ]
+        # Always add back button
+        buttons.append([
+            InlineKeyboardButton(
+                text=get_message("btn_back", language),
+                callback_data="back_to_menu"
             )
+        ])
 
-        # Add back button
-        buttons.append(
-            [
-                {
-                    "text": get_message("btn_back", language),
-                    "callback_data": PREMIUM_BUTTONS["back"]["callback_data"],
-                }
-            ]
-        )
+        return InlineKeyboardMarkup(buttons)
 
-        return create_keyboard(buttons, language)
     except Exception as e:
-        logger.error(
-            f"Error creating premium options keyboard: {str(e)}", exc_info=True
-        )
-        # Create a simple back button keyboard as fallback
-        buttons = [
-            [
-                {
-                    "text": get_message("btn_back", language),
-                    "callback_data": "back_to_menu",
-                }
-            ]
-        ]
-        return create_keyboard(buttons, language)
+        logger.error(f"Error creating premium options keyboard: {str(e)}", exc_info=True)
+        # Fallback to simple back button
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                text=get_message("btn_back", language),
+                callback_data="back_to_menu"
+            )
+        ]])
 
 
-def create_premium_status_keyboard(language: str) -> InlineKeyboardMarkup:
-    """Create keyboard for premium status view."""
+def create_premium_upgrade_keyboard(language: str) -> InlineKeyboardMarkup:
+    """Create keyboard for premium upgrade view."""
     buttons = [
         [
-            {
-                "text": get_message("btn_premium_extend_pro", language),
-                "callback_data": PREMIUM_BUTTONS["extend_pro"]["callback_data"],
-            }
+            InlineKeyboardButton(
+                text=get_message("btn_premium_upgrade_pro", language),
+                callback_data="upgrade_pro"
+            )
         ],
         [
-            {
-                "text": get_message("btn_premium_upgrade_pro", language),
-                "callback_data": PREMIUM_BUTTONS["upgrade_pro"]["callback_data"],
-            }
-        ],
-        [
-            {
-                "text": get_message("btn_premium_back", language),
-                "callback_data": PREMIUM_BUTTONS["back"]["callback_data"],
-            }
+            InlineKeyboardButton(
+                text=get_message("btn_premium_back", language),
+                callback_data="back_to_menu"
+            )
         ],
     ]
-    return create_keyboard(buttons, language)
+    return InlineKeyboardMarkup(buttons)
+
+
+def create_subscription_cancel_keyboard(language: str) -> InlineKeyboardMarkup:
+    """Create keyboard for subscription cancellation confirmation."""
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=get_message("btn_confirm_cancel", language),
+                callback_data="confirm_cancel_subscription"
+            ),
+            InlineKeyboardButton(
+                text=get_message("btn_keep_subscription", language),
+                callback_data="keep_subscription"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=get_message("btn_back", language),
+                callback_data="back_to_premium"
+            )
+        ]
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+def create_subscription_cancelled_keyboard(language: str) -> InlineKeyboardMarkup:
+    """Create keyboard after subscription cancellation."""
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=get_message("btn_back", language),
+                callback_data="back_to_premium"
+            )
+        ]
+    ]
+    return InlineKeyboardMarkup(buttons)
 
 
 def create_support_menu_keyboard(language: str) -> InlineKeyboardMarkup:
@@ -196,32 +135,32 @@ def create_support_menu_keyboard(language: str) -> InlineKeyboardMarkup:
     try:
         buttons = [
             [
-                {
-                    "text": get_message("btn_support_chat_bot", language),
-                    "url": SUPPORT_BUTTONS["chat_bot"]["url"],
-                },
-                {
-                    "text": get_message("btn_support_community", language),
-                    "url": SUPPORT_BUTTONS["community"]["url"],
-                },
+                InlineKeyboardButton(
+                    text=get_message("btn_support_chat_bot", language),
+                    url="https://t.me/sumari_support_bot"
+                ),
+                InlineKeyboardButton(
+                    text=get_message("btn_support_community", language),
+                    url="https://t.me/sumari_community"
+                ),
             ],
             [
-                {
-                    "text": get_message("btn_support_back", language),
-                    "callback_data": SUPPORT_BUTTONS["back"]["callback_data"],
-                }
+                InlineKeyboardButton(
+                    text=get_message("btn_support_back", language),
+                    callback_data="back_to_premium"
+                )
             ],
         ]
-        return create_keyboard(buttons, language)
+        return InlineKeyboardMarkup(buttons)
     except Exception as e:
         logger.error(f"Error creating support menu keyboard: {str(e)}", exc_info=True)
         # Create a simple back button keyboard as fallback
         buttons = [
             [
-                {
-                    "text": get_message("btn_back", language),
-                    "callback_data": "back_to_premium",
-                }
+                InlineKeyboardButton(
+                    text=get_message("btn_back", language),
+                    callback_data="back_to_premium"
+                )
             ],
         ]
-        return create_keyboard(buttons, language)
+        return InlineKeyboardMarkup(buttons)

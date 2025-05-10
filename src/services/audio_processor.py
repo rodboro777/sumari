@@ -167,7 +167,7 @@ class AudioProcessor:
             # Track TTS metrics for generated audio
             char_count = len(text)
             duration = len(response.audio_content) / 32000  # Approximate duration based on MP3 bitrate
-            self.metrics.log_tts_usage(
+            metrics_collector.log_tts_usage(
                 user_id=user_id,
                 char_count=char_count,
                 duration=duration,
@@ -185,7 +185,7 @@ class AudioProcessor:
         except Exception as e:
             # Log error
             processing_time = time.time() - start_time
-            self.db.log_api_usage(
+            db_manager.log_api_usage(
                 user_id=user_id,
                 api_name="audio_processing",
                 status="error",
@@ -195,7 +195,7 @@ class AudioProcessor:
             # Track failed TTS attempt
             char_count = len(text)
             duration = 0
-            self.metrics.log_tts_usage(
+            metrics_collector.log_tts_usage(
                 user_id=user_id,
                 char_count=char_count,
                 duration=duration,

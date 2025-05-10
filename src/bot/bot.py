@@ -10,7 +10,6 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     filters,
-    PreCheckoutQueryHandler,
     ContextTypes,
     Defaults,
 )
@@ -23,35 +22,35 @@ from src.config import (
 )
 from src.services import VideoProcessor
 from src.services import payment_processor
-from src.services import AudioProcessor
-from src.services import monitoring_service
 from src.core.utils import (
     extract_video_id,
     get_user_language,
-    get_user_preferences,
+    calculate_eta,
+    format_eta,
+    handle_error,
+    are_notifications_enabled,
 )
+from src.core.utils.text import escape_md
+from src.core.utils.security import security_check
 from src.core.localization import get_message
-from src.core.keyboards import (
-    create_main_menu_keyboard,
-    create_menu_language_selection_keyboard,
-)
+from src.core.keyboards import create_main_menu_keyboard
+from src.bot.handlers.basic import start
+from src.bot.handlers.limits import check_summary_limits_and_notify
 from src.bot.handlers import (
-    # Command handlers
-    start,
     menu_command,
     help_command,
     about_command,
-    set_language,
-    button_callback,
-    test_voice,
-    test_tts,
-
-    #Premium handlers
-    premium_command,
-
+    language_menu_command,
+)
+from src.bot.handlers import (
+    # Premium handlers
+    handle_premium,
     # Media handlers
     handle_audio_summary,
+    # Command handlers
+    button_callback,
 )
+from src.core.utils.error_handler import handle_error
 
 # Flask app for webhook
 app = Flask(__name__)
@@ -67,29 +66,8 @@ application = ApplicationBuilder().token(TOKEN).defaults(defaults).build()
 # Initialize payment processor with bot instance
 payment_processor.bot = application.bot
 
-# Error handler
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error and send a telegram message to notify the developer."""
-    # Log the error
-    logger.error("Exception while handling an update:", exc_info=context.error)
-
-    # Extract the error message
-    if isinstance(context.error, Exception):
-        error_msg = str(context.error)
-    else:
-        error_msg = "An unknown error occurred"
-
-    # Log to monitoring service
-    monitoring_service.log_error("telegram_bot", error_msg)
-
-    # Send message to user if possible
-    if update and isinstance(update, Update) and update.effective_chat:
-        language = get_user_language(context, update.effective_user.id)
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=get_message("error_occurred", language),
-            parse_mode=ParseMode.MARKDOWN_V2,
-        )
+# Configure error handler
+application.add_error_handler(handle_error)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -97,52 +75,137 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         text = update.message.text
         user_id = update.effective_user.id
-        language = get_user_language(context, user_id)
+        language = get_user_language(user_id)
+        notifications_enabled = are_notifications_enabled(user_id)
 
-        # Check if it's a YouTube URL
+        # Perform security checks first
+        is_allowed, error_message = await security_check(update)
+        if not is_allowed:
+            if error_message == "not_youtube_url":
+                await update.message.reply_text(
+                    text=escape_md(get_message("not_youtube_url", language)),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=create_main_menu_keyboard(language),
+                    disable_notification=not notifications_enabled,
+                )
+            else:
+                await update.message.reply_text(
+                    text=escape_md(
+                        get_message("security_error", language).format(
+                            error=error_message
+                        )
+                    ),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    disable_notification=not notifications_enabled,
+                )
+            return
+
+        # Extract video ID and process
         video_id = extract_video_id(text)
-        if video_id:
-            # Show processing message
-            processing_msg = await update.message.reply_text(
-                text=get_message("processing_summary", language),
+        if not video_id:
+            # This should not happen as security check already validates URL
+            logger.error(
+                f"Failed to extract video ID after security check passed: {text[:50]}..."
+            )
+            await update.message.reply_text(
+                text=escape_md(get_message("invalid_url", language)),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                disable_notification=not notifications_enabled,
+            )
+            return
+
+        # First check if user has hit their limits
+        can_proceed = await check_summary_limits_and_notify(update)
+        if not can_proceed:
+            return
+
+        # Show initial processing message
+        processing_msg = await update.message.reply_text(
+            text=get_message("fetching", language),
+            parse_mode=ParseMode.MARKDOWN_V2,
+            disable_notification=not notifications_enabled,
+        )
+
+        # Initialize video processor
+        video_processor = VideoProcessor()
+
+        try:
+            # Try to extract content first
+            content = await video_processor._extract_content(
+                f"https://www.youtube.com/watch?v={video_id}"
+            )
+            if not content:
+                raise ValueError("No transcript available")
+
+            # Calculate ETA based on content length
+            content_length = len(content)
+            eta_seconds = calculate_eta(content_length)
+            eta_text = format_eta(eta_seconds)
+
+            # Update message with ETA
+            await processing_msg.edit_text(
+                text=get_message("processing_video", language).format(eta=eta_text),
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
 
-            # Process YouTube video with both summarization methods
-            video_processor = VideoProcessor()
+            # Show summarizing message
+            await processing_msg.edit_text(
+                text=get_message("summarizing", language),
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+
+            # Process YouTube video with Gemini only
             success, result = await video_processor.process_link(
                 link=f"https://www.youtube.com/watch?v={video_id}",
                 user_id=user_id,
                 language=language,
-                summary_type="both",
+                summary_type="gemini",
             )
 
             # Handle result
             if success:
                 await video_processor.send_summary(
+                    bot=context.bot,
                     chat_id=update.effective_chat.id,
                     summary_data=result,
                     language=language,
+                    disable_notification=not notifications_enabled,
                 )
             else:
                 logger.error(f"Failed to process video {video_id}: {result}")
                 await update.message.reply_text(
-                    text=get_message("error_processing", language),
+                    text=escape_md(
+                        get_message("error_processing", language).format(
+                            error=result["error"]
+                        )
+                    ),
                     parse_mode=ParseMode.MARKDOWN_V2,
+                    disable_notification=not notifications_enabled,
                 )
-
-            # Delete processing message
-            await processing_msg.delete()
-        else:
-            logger.info(f"Received non-URL text from user {user_id}: {text[:50]}...")
+        except Exception as e:
+            logger.error(f"Error processing video {video_id}: {str(e)}")
             await update.message.reply_text(
-                text=get_message("not_youtube_url", language),
+                text=escape_md(
+                    get_message("error_processing", language).format(error=str(e))
+                ),
                 parse_mode=ParseMode.MARKDOWN_V2,
-                reply_markup=create_main_menu_keyboard(language),
+                disable_notification=not notifications_enabled,
             )
+        finally:
+            # Always try to delete the processing message
+            try:
+                await processing_msg.delete()
+            except Exception as e:
+                logger.error(f"Error deleting processing message: {str(e)}")
+
     except Exception as e:
         logger.error(f"Error in handle_text: {str(e)}", exc_info=True)
-        raise
+        error_text = escape_md(get_message("error", language).format(error=str(e)))
+        await update.message.reply_text(
+            text=error_text,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            disable_notification=not notifications_enabled,
+        )
 
 
 # === OPTION 1: Webhook Approach ===
@@ -167,12 +230,8 @@ def add_handlers(application):
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("about", about_command))
-    application.add_handler(CommandHandler("language", set_language))
-    application.add_handler(CommandHandler("test_voice", test_voice))
-    application.add_handler(CommandHandler("test_tts", test_tts))
-
-    # Premium handlers
-    application.add_handler(CommandHandler("premium", premium_command))
+    application.add_handler(CommandHandler("language", language_menu_command))
+    application.add_handler(CommandHandler("premium", handle_premium))
 
     # General handlers
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -182,7 +241,7 @@ def add_handlers(application):
     application.add_handler(
         CallbackQueryHandler(handle_audio_summary, pattern="^get_audio_summary$")
     )
-    application.add_error_handler(error_handler)
+    application.add_error_handler(handle_error)
 
 
 # Initialize handlers

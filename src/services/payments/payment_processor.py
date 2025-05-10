@@ -1,9 +1,9 @@
 """Payment processing service."""
 
 from typing import Dict, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
-from telegram import Update
+from telegram import Update, LabeledPrice
 from telegram.ext import ContextTypes
 from telegram.error import TelegramError
 from src.services.payments.stripe_service import StripeService
@@ -13,6 +13,17 @@ from src.config import PAYMENT_PROVIDER_TOKEN, STRIPE_CONFIG
 from src.database import db_manager
 from src.logging import metrics_collector
 from src.core.keyboards.payment_success import PaymentSuccessKeyboard
+
+# Define payment provider info
+PAYMENT_PROVIDERS = {
+    "stripe": {"name": "Card", "enabled": True, "currencies": ["USD", "EUR", "GBP"]},
+    "nowpayments": {
+        "name": "Crypto",
+        "enabled": True,
+        "currencies": ["USDT", "BTC", "ETH"],
+    },
+}
+
 
 class PaymentProcessor:
     _instance = None
@@ -32,8 +43,9 @@ class PaymentProcessor:
             self.nowpayments = NOWPaymentsService()
             self.subscription_manager = SubscriptionManager()
             self.premium_tiers = STRIPE_CONFIG["tiers"]
+            self.payment_providers = PAYMENT_PROVIDERS
             self.initialized = True
-            
+
         # Always update bot instance if provided
         if bot is not None:
             self.bot = bot
@@ -56,6 +68,7 @@ class PaymentProcessor:
 
             tier_info = self.premium_tiers[tier]
             product_id = tier_info["stripe_product_id"]
+            amount = tier_info["prices"]["USD"]
 
             if not product_id:
                 return False, {
@@ -64,7 +77,11 @@ class PaymentProcessor:
 
             # Create Stripe checkout session using StripeService
             success, result = await self.stripe.create_checkout_session(
-                product_id=product_id, user_id=user_id, chat_id=chat_id, tier=tier
+                product_id=product_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                tier=tier,
+                amount=amount,
             )
 
             if not success:
@@ -75,7 +92,7 @@ class PaymentProcessor:
             self.db.log_payment_attempt(
                 user_id=user_id,
                 tier=tier,
-                amount=0,  # Amount will be determined by the tier
+                amount=amount,
                 currency="USD",
                 payment_type="stripe",
             )
@@ -110,11 +127,15 @@ class PaymentProcessor:
             self.logger.error(f"Error handling Stripe webhook: {str(e)}")
             return False, str(e)
 
-    async def _handle_subscription_event(self, subscription_data: Dict) -> Tuple[bool, str]:
+    async def _handle_subscription_event(
+        self, subscription_data: Dict
+    ) -> Tuple[bool, str]:
         """Handle subscription created/updated events."""
         try:
             # Get customer and user data
-            customer = self.stripe.get_customer_from_subscription(subscription_data["id"])
+            customer = self.stripe.get_customer_from_subscription(
+                subscription_data["id"]
+            )
             if not customer:
                 return False, "Could not retrieve customer data"
 
@@ -146,7 +167,9 @@ class PaymentProcessor:
             self.logger.error(f"Error handling subscription event: {str(e)}")
             return False, str(e)
 
-    async def _handle_subscription_deleted(self, event_object: Dict) -> Tuple[bool, str]:
+    async def _handle_subscription_deleted(
+        self, event_object: Dict
+    ) -> Tuple[bool, str]:
         """Handle subscription cancellation events."""
         try:
             customer = self.stripe.get_customer_from_subscription(event_object["id"])
@@ -181,26 +204,36 @@ class PaymentProcessor:
                             # Get subscription details
                             subscription_id = session.get("subscription")
                             if subscription_id:
-                                subscription = self.stripe.get_subscription(subscription_id)
+                                subscription = self.stripe.get_subscription(
+                                    subscription_id
+                                )
                                 self.logger.info(f"Subscription data: {subscription}")
-                                current_period_end = subscription["current_period_end"]
-                                self.logger.info(f"Current period end: {current_period_end}")
-                                
+                                current_period_end = subscription.get(
+                                    "current_period_end"
+                                )
+                                self.logger.info(
+                                    f"Current period end: {current_period_end}"
+                                )
+
                                 await self.db.update_premium_status(
                                     user_id=user_id,
                                     premium_data={
                                         "tier": tier,
                                         "active": True,
                                         "expiry_date": current_period_end,
-                                        "summaries_limit": self.premium_tiers[tier]["summaries_limit"],
-                                        "subscription_id": subscription_id
-                                    }
+                                        "summaries_limit": self.premium_tiers[tier][
+                                            "summaries_limit"
+                                        ],
+                                        "subscription_id": subscription_id,
+                                    },
                                 )
                         except KeyError as e:
                             self.logger.error(f"Missing key in subscription data: {e}")
                             return False, f"Missing subscription data: {e}"
                         except Exception as e:
-                            self.logger.error(f"Error updating premium status: {str(e)}")
+                            self.logger.error(
+                                f"Error updating premium status: {str(e)}"
+                            )
                             return False, str(e)
 
                     # Then send success message
@@ -208,16 +241,16 @@ class PaymentProcessor:
                     language_code = user_lang or "en"
                     message = PaymentSuccessKeyboard.get_success_message(language_code)
                     keyboard = PaymentSuccessKeyboard.get_keyboard(language_code)
-                    
+
                     await self.bot.send_message(
                         chat_id=chat_id,
                         text=message,
                         parse_mode="MarkdownV2",
-                        reply_markup=keyboard
+                        reply_markup=keyboard,
                     )
-                    
+
                     return True, "Checkout session completed successfully"
-                    
+
                 except Exception as e:
                     self.logger.error(f"Failed to send success message: {str(e)}")
                     return False, str(e)
@@ -228,7 +261,9 @@ class PaymentProcessor:
             self.logger.error(f"Error handling checkout completion: {str(e)}")
             return False, str(e)
 
-    async def _get_tier_from_subscription(self, subscription_data: Dict) -> Optional[str]:
+    async def _get_tier_from_subscription(
+        self, subscription_data: Dict
+    ) -> Optional[str]:
         """Determine the tier based on the subscription product ID."""
         try:
             product_id = subscription_data["plan"]["product"]
@@ -244,7 +279,9 @@ class PaymentProcessor:
             self.logger.error(f"Error getting tier from subscription: {str(e)}")
             return None
 
-    async def _update_premium_status(self, user_id: int, subscription_data: Dict, tier: str) -> None:
+    async def _update_premium_status(
+        self, user_id: int, subscription_data: Dict, tier: str
+    ) -> None:
         """Update user's premium status in the database."""
         try:
             current_period_end = subscription_data.get("current_period_end")
@@ -257,8 +294,8 @@ class PaymentProcessor:
                     "active": True,
                     "expiry_date": current_period_end,
                     "summaries_limit": self.premium_tiers[tier]["summaries_limit"],
-                    "subscription_id": subscription_id
-                }
+                    "subscription_id": subscription_id,
+                },
             )
         except Exception as e:
             self.logger.error(f"Error updating premium status: {str(e)}")
@@ -278,16 +315,31 @@ class PaymentProcessor:
                 return False, {"error": "Invalid subscription tier"}
 
             tier_info = self.premium_tiers[tier]
-            price = tier_info["prices"][currency]
+            provider_info = self.payment_providers.get(provider)
+            if not provider_info:
+                return False, {"error": "Invalid payment provider"}
+
+            # Get price from Stripe
+            try:
+                price_info = self.stripe.get_price_for_product(
+                    tier_info["stripe_product_id"]
+                )
+                price = price_info["amount"]  # Amount in cents
+            except Exception as e:
+                self.logger.error(f"Error getting price from Stripe: {str(e)}")
+                return False, {"error": "Could not fetch price information"}
+
+            title = tier_info["name"]
+            description = tier_info["description"]
 
             # Create invoice details
             invoice = {
-                "title": f"{tier_info['name']} ({provider_info['name']})",
-                "description": tier_info["description"],
+                "title": f"{title} ({provider_info['name']})",
+                "description": description,
                 "payload": f"premium_{tier}_{user_id}_{provider}",
                 "provider_token": PAYMENT_PROVIDER_TOKEN,
                 "currency": currency,
-                "prices": [LabeledPrice(tier_info["name"], price)],
+                "prices": [LabeledPrice(title, price)],
             }
 
             # Log payment creation attempt

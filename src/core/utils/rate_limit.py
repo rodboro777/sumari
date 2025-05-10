@@ -9,7 +9,7 @@ from src.database.db_manager import db_manager
 RATE_LIMIT: Dict[int, float] = {}
 
 
-def check_rate_limit(user_id: int) -> bool:
+async def check_rate_limit(user_id: int) -> bool:
     """Check if user is rate limited for requests."""
     current_time = datetime.now(timezone.utc).timestamp()
     last_request = RATE_LIMIT.get(user_id, 0)
@@ -21,7 +21,7 @@ def check_rate_limit(user_id: int) -> bool:
     return True
 
 
-def check_monthly_limit(user_id: int) -> Tuple[bool, Optional[str], Optional[int]]:
+async def check_monthly_limit(user_id: int) -> Tuple[bool, Optional[str], Optional[int]]:
     """Check if user has exceeded their monthly summary limit.
     
     Returns:
@@ -34,7 +34,7 @@ def check_monthly_limit(user_id: int) -> Tuple[bool, Optional[str], Optional[int
         
         # Get tier limits
         tier_config = TIER_LIMITS.get(tier, TIER_LIMITS["free"])
-        monthly_limit = tier_config["monthly_summaries"]
+        monthly_limit = tier_config.get("monthly_summaries", 5)  # Default to 5 for safety
         
         # Check summaries used this month
         now = datetime.now(timezone.utc)

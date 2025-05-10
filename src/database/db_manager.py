@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 import time
 import warnings
-
+from src.config import TIER_LIMITS
 from src.logging import metrics_collector
 import logging
 
@@ -13,7 +13,6 @@ warnings.filterwarnings(
     "ignore", category=UserWarning, module="google.cloud.firestore_v1.base_collection"
 )
 logger = logging.getLogger(__name__)
-
 
 class DatabaseManager:
     _instance = None
@@ -28,21 +27,22 @@ class DatabaseManager:
         """Initialize Firestore client."""
         if self._initialized:
             return
-
         try:
-            # Try to initialize with service account file if not already initialized
+            # Initialize Firebase if not already initialized
             if not firebase_admin._apps:
                 cred = credentials.Certificate(
                     "sumari-e218a-firebase-adminsdk-fbsvc-4237ee8346.json"
                 )
                 firebase_admin.initialize_app(cred)
-        except Exception as e:
-            print(f"Error initializing Firebase: {e}")
-            raise
+                logger.info("Firebase initialized successfully")
 
-        self.db = firestore.client()
-        self.metrics = metrics_collector
-        self._initialized = True
+            self.db = firestore.client()
+            self.metrics = metrics_collector
+            self._initialized = True
+            self.free_limit = TIER_LIMITS["free"]["monthly_summaries"]
+        except Exception as e:
+            logger.error(f"Error initializing Firebase: {str(e)}")
+            raise
 
     def _track_firestore_operation(
         self,
@@ -57,7 +57,7 @@ class DatabaseManager:
             # Temporarily disabled Cloud Monitoring logging
             pass
         except Exception as e:
-            self.logger.error(f"Error logging metric to Cloud Monitoring: {str(e)}")
+            logger.error(f"Error logging metric to Cloud Monitoring: {str(e)}")
             pass
 
     # User Management (minimal, just for tracking)
@@ -82,26 +82,19 @@ class DatabaseManager:
                         "audio_enabled": False,  # Default audio setting
                         "voice_gender": "female",  # Default voice gender
                         "voice_language": "en",  # Default voice language
+                        "notifications_enabled": True,  # Default notification setting
                     },
                     "stats": {
-                        "daily": {
-                            "date": datetime.now().strftime("%Y-%m-%d"),
-                            "summaries_used": 0,
-                            "audio_summaries": 0,
-                            "total_processing_time": 0,
-                        },
-                        "total": {
-                            "summaries_used": 0,
-                            "audio_summaries": 0,
-                            "total_processing_time": 0,
-                        },
+                        "summaries_used": 0,
+                        "audio_summaries": 0,
+                        "total_processing_time": 0,
                     },
                     "premium": {
                         "tier": "free",
                         "active": True,
                         "activation_date": datetime.now().isoformat(),
                         "expiry_date": None,
-                        "summaries_limit": 3,  # 3 summaries per day for free tier
+                        "summaries_limit": 5,  # 3 summaries per day for free tier
                         "summaries_used": 0,
                     },
                 }
@@ -123,17 +116,13 @@ class DatabaseManager:
                             "audio_enabled": False,
                             "voice_gender": "female",
                             "voice_language": "en",
+                            "notifications_enabled": True,
                         },
                     ),
                     "stats": user_data.get(
                         "stats",
                         {
-                            "daily": {
-                                "date": datetime.now().strftime("%Y-%m-%d"),
-                                "summaries_used": 0,
-                                "audio_summaries": 0,
-                                "total_processing_time": 0,
-                            },
+                            "monthly": {},
                             "total": {
                                 "summaries_used": 0,
                                 "audio_summaries": 0,
@@ -150,7 +139,7 @@ class DatabaseManager:
                         "active": True,
                         "activation_date": datetime.now().isoformat(),
                         "expiry_date": None,
-                        "summaries_limit": 3,
+                        "summaries_limit": self.free_limit,
                         "summaries_used": 0,
                     }
 
@@ -221,6 +210,26 @@ class DatabaseManager:
 
         return history
 
+    def _get_user_doc(self, user_id: int):
+        """Get user document reference."""
+        return self.db.collection("users").document(str(user_id))
+
+    def get_user_language(self, user_id: int) -> str:
+        """Get user's current language preference."""
+        try:
+            user_ref = self._get_user_doc(user_id)
+            user_doc = user_ref.get()
+
+            if not user_doc.exists:
+                return "en"
+
+            data = user_doc.to_dict()
+            preferences = data.get("preferences", {})
+            return preferences.get("menu_language", "en")
+        except Exception as e:
+            logger.error(f"Error getting user language: {e}")
+            return "en"
+
     def _cleanup_old_history(self, user_id: int, max_size: int = 10) -> None:
         """Remove old history entries if exceeding max_size."""
         history_ref = (
@@ -272,6 +281,57 @@ class DatabaseManager:
             user_ref.update(updates)
             self._track_firestore_operation("write", "users")
 
+    def increment_user_stats(
+        self, user_id: int, summary_type: str, processing_time: float
+    ):
+        """Increment user summary statistics."""
+        try:
+            user_ref = self.db.collection("users").document(str(user_id))
+            user_doc = user_ref.get()
+
+            if not user_doc.exists:
+                return
+
+            user_data = user_doc.to_dict()
+            stats = user_data.get("stats", {})
+
+            # Update total stats
+            total_stats = stats.get(
+                "total",
+                {"summaries_used": 0, "audio_summaries": 0, "total_processing_time": 0},
+            )
+
+            total_stats["summaries_used"] += 1
+            if summary_type == "audio":
+                total_stats["audio_summaries"] += 1
+            total_stats["total_processing_time"] += processing_time
+
+            # Update monthly stats
+            current_month = datetime.now().strftime("%Y-%m")
+            monthly_stats = stats.get("monthly", {})
+            current_month_stats = monthly_stats.get(
+                current_month,
+                {"summaries_used": 0, "audio_summaries": 0, "total_processing_time": 0},
+            )
+
+            current_month_stats["summaries_used"] += 1
+            if summary_type == "audio":
+                current_month_stats["audio_summaries"] += 1
+            current_month_stats["total_processing_time"] += processing_time
+
+            monthly_stats[current_month] = current_month_stats
+
+            # Update document
+            user_ref.update(
+                {
+                    "stats.total": total_stats,
+                    "stats.monthly": monthly_stats,
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"Error incrementing user stats: {e}")
+
     def get_user_usage_stats(self, user_id: int, timeframe_hours: int = 24) -> Dict:
         """Get user's API usage statistics from the user document."""
         user_ref = self.db.collection("users").document(str(user_id))
@@ -284,6 +344,7 @@ class DatabaseManager:
         user_dict = user_data.to_dict()
         stats = user_dict.get("stats", {})
 
+        # Get current month's stats
         # If requesting 24h stats, return daily stats
         if timeframe_hours == 24:
             daily_stats = stats.get("daily", {})
@@ -307,261 +368,113 @@ class DatabaseManager:
             "total_processing_time": total_stats.get("total_processing_time", 0),
         }
 
-    def get_monthly_usage(self, user_id: int) -> Dict:
-        """Get user's monthly usage data."""
+    def get_user_data(self, user_id: int) -> Dict:
+        """Get all user data including preferences and premium status."""
         try:
             user_ref = self.db.collection("users").document(str(user_id))
             user_doc = user_ref.get()
 
             if not user_doc.exists:
+                # Return default data for new users
                 return {
-                    "summaries_used": 0,
-                    "summaries_limit": 5,  # Default free tier limit
-                    "tier": "free",
+                    "preferences": {
+                        "menu_language": "en",
+                        "summary_language": "en",
+                        "summary_length": "medium",
+                        "audio_enabled": False,
+                        "voice_gender": "female",
+                        "voice_language": "en",
+                    },
+                    "premium": {
+                        "tier": "free",
+                        "active": True,
+                        "summaries_limit": 5,
+                        "summaries_used": 0,
+                    },
+                    "stats": {
+                        "monthly": {},
+                        "daily": {
+                            "date": datetime.now().strftime("%Y-%m-%d"),
+                            "summaries_used": 0,
+                            "audio_summaries": 0,
+                            "total_processing_time": 0,
+                        },
+                        "total": {
+                            "summaries_used": 0,
+                            "audio_summaries": 0,
+                            "total_processing_time": 0,
+                        },
+                    },
                 }
 
-            user_data = user_doc.to_dict()
-            premium_data = user_data.get("premium", {})
+            return user_doc.to_dict()
 
-            return {
-                "summaries_used": premium_data.get("summaries_used", 0),
-                "summaries_limit": premium_data.get("summaries_limit", 5),
-                "tier": premium_data.get("tier", "free"),
-            }
         except Exception as e:
-            print(f"Error getting monthly usage: {e}")
-            return {"summaries_used": 0, "summaries_limit": 5, "tier": "free"}
-
-    # Error Tracking
-    def log_error(
-        self, error_type: str, error_message: str, user_id: Optional[int] = None
-    ) -> None:
-        """Log error for monitoring."""
-        error_ref = self.db.collection("errors").document()
-        error_data = {
-            "type": error_type,
-            "message": error_message,
-            "user_id": user_id,
-            "timestamp": firestore.SERVER_TIMESTAMP,
-        }
-        error_ref.set(error_data)
-
-    # Payment Management
-    def log_payment_attempt(
-        self,
-        user_id: int,
-        tier: str,
-        amount: int,
-        currency: str,
-        payment_type: str = "fiat",
-    ) -> None:
-        """Log payment attempt in database."""
-        payment_ref = self.db.collection("payments").document()
-        payment_data = {
-            "user_id": user_id,
-            "tier": tier,
-            "amount": amount,
-            "currency": currency,
-            "payment_type": payment_type,
-            "status": "pending",
-            "timestamp": firestore.SERVER_TIMESTAMP,
-        }
-        payment_ref.set(payment_data)
-
-    def log_successful_payment(
-        self, user_id: int, tier: str, amount: int, currency: str
-    ) -> None:
-        """Log successful payment in database."""
-        # Update latest pending payment to successful
-        payments_ref = (
-            self.db.collection("payments")
-            .where("user_id", "==", user_id)
-            .where("status", "==", "pending")
-            .order_by("timestamp", direction=firestore.Query.DESCENDING)
-            .limit(1)
-        )
-
-        for doc in payments_ref.stream():
-            doc.reference.update(
-                {"status": "completed", "completed_at": firestore.SERVER_TIMESTAMP}
-            )
-
-    def update_premium_status(self, user_id: int, premium_data: Dict) -> None:
-        """Update user's premium status with all necessary fields."""
-        user_ref = self.db.collection("users").document(str(user_id))
-        
-        # Get current user data
-        user_data = user_ref.get()
-        if not user_data.exists:
-            raise ValueError(f"User {user_id} not found in database")
-            
-        current_data = user_data.to_dict()
-        
-        # Update premium fields
-        update_data = {
-            "premium": {
-                "tier": premium_data["tier"],
-                "active": premium_data["active"],
-                "expiry_date": premium_data["expiry_date"],
-                "summaries_limit": premium_data.get("summaries_limit", 5),
-                "subscription_id": premium_data.get("subscription_id"),
-                "activation_date": firestore.SERVER_TIMESTAMP,
-                "summaries_used": 0,  # Reset summaries used when upgrading
-            },
-            "last_seen": firestore.SERVER_TIMESTAMP,
-        }
-        
-        # Update the document
-        user_ref.set(update_data, merge=True)
-        
-        # Log the premium status change
-        self.metrics.log_premium_status_change(
-            user_id=user_id,
-            old_tier=current_data.get("premium", {}).get("tier", "free"),
-            new_tier=premium_data["tier"],
-            active=premium_data["active"]
-        )
-
-    def get_premium_status(self, user_id: int) -> Optional[Dict]:
-        """Get user's premium status."""
-        user_ref = self.db.collection("users").document(str(user_id))
-        user_data = user_ref.get()
-
-        if not user_data.exists:
-            return None
-
-        user_dict = user_data.to_dict()
-        return user_dict.get("premium")
-
-    def increment_summaries_used(self, user_id: int) -> None:
-        """Increment the number of summaries used by a premium user."""
-        user_ref = self.db.collection("users").document(str(user_id))
-        user_ref.update({"premium.summaries_used": firestore.Increment(1)})
-
-    def update_user_preferences(self, user_id: int, preferences: Dict) -> None:
-        """Update user's preferences."""
-        try:
-            user_ref = self.db.collection("users").document(str(user_id))
-            user_ref.set({"preferences": preferences}, merge=True)
-        except Exception as e:
-            logger.error(f"Error updating user preferences: {e}")
-            raise
-
-    def get_user_preferences(self, user_id: int) -> Dict:
-        """Get user's preferences."""
-        try:
-            user_ref = self.db.collection("users").document(str(user_id))
-            user_data = user_ref.get()
-
-            if not user_data.exists:
-                return {
-                    "menu_language": "en",
-                    "summary_language": "en",
-                    "summary_length": "medium",
-                    "audio_enabled": False,
-                    "voice_gender": "female",
-                    "voice_language": "en",
-                }
-
-            user_dict = user_data.to_dict()
-            preferences = user_dict.get("preferences", {})
-
-            # Ensure default values if not set
-            if not preferences:
-                preferences = {
-                    "menu_language": "en",
-                    "summary_language": "en",
-                    "summary_length": "medium",
-                    "audio_enabled": False,
-                    "voice_gender": "female",
-                    "voice_language": "en",
-                }
-
-            return preferences
-        except Exception as e:
-            logger.error(f"Error getting user preferences: {e}")
+            logger.error(f"Error getting user data: {e}")
+            # Return safe default data
             return {
-                "menu_language": "en",
-                "summary_language": "en",
-                "summary_length": "medium",
-                "audio_enabled": False,
-                "voice_gender": "female",
-                "voice_language": "en",
-            }
-
-    def get_user_data(self, user_id: int) -> Dict:
-        """Get all user data including preferences and premium status."""
-        user_ref = self.db.collection("users").document(str(user_id))
-        user_data = user_ref.get()
-
-        if not user_data.exists:
-            return {
-                "preferences": {"language": "en", "summary_length": "medium"},
+                "preferences": {"menu_language": "en", "summary_length": "medium"},
                 "premium": {
                     "tier": "free",
                     "active": True,
-                    "summaries_limit": 3,
+                    "summaries_limit": 5,
                     "summaries_used": 0,
                 },
+                "stats": {"monthly": {}, "daily": {}, "total": {}},
             }
 
-        return user_data.to_dict()
-
-    def update_user_language(self, user_id: int, language: str) -> None:
-        """Update user's interface language preference."""
+    def get_monthly_usage(self, user_id: int) -> Dict:
+        """Get user's monthly usage data."""
         try:
-            user_ref = self.db.collection("users").document(str(user_id))
-            user_ref.update({"preferences.menu_language": language})
-        except Exception as e:
-            self.logger.error(f"Error updating user language: {e}")
-            raise
+            user_data = self.get_user_data(user_id)
+            premium = user_data.get("premium", {})
 
-    def get_user_language(self, user_id: int) -> str:
-        """Get user's interface language preference."""
+            # Get monthly usage
+            stats = user_data.get("stats", {})
+            current_month = datetime.now().strftime("%Y-%m")
+            monthly_stats = stats.get("monthly", {})
+            current_month_stats = monthly_stats.get(
+                current_month, {"summaries_used": 0}
+            )
+
+            return {
+                "summaries_used": current_month_stats["summaries_used"],
+                "summaries_limit": premium.get("summaries_limit", 5),
+                "tier": premium.get("tier", "free"),
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting monthly usage: {e}")
+            return {"summaries_used": 0, "summaries_limit": 5, "tier": "free"}
+
+    def count_user_summaries(self, user_id: int, start_date: datetime) -> int:
+        """Get number of summaries used by user in current month."""
         try:
-            user_ref = self.db.collection("users").document(str(user_id))
-            user_data = user_ref.get()
-            if user_data.exists:
-                preferences = user_data.to_dict().get("preferences", {})
-                return preferences.get("menu_language", "en")
-            return "en"  # Default to English if user not found
+            user_doc = self.db.collection("users").document(str(user_id)).get()
+            if not user_doc.exists:
+                return 0
+
+            user_data = user_doc.to_dict()
+            stats = user_data.get("stats", {})
+            current_month = datetime.now().strftime("%Y-%m")
+
+            # Get monthly stats
+            monthly_stats = stats.get("monthly", {})
+            current_month_stats = monthly_stats.get(
+                current_month, {"summaries_used": 0}
+            )
+
+            return current_month_stats["summaries_used"]
+
         except Exception as e:
-            logger.error(f"Error getting user language: {e}")
-            return "en"
-
-    def count_user_summaries(
-        self, user_id: int, start_date: datetime = None, end_date: datetime = None
-    ) -> int:
-        """
-        Count the number of summaries generated by a user within a date range.
-
-        Args:
-            user_id (int): The ID of the user.
-            start_date (datetime, optional): The start date of the range. Defaults to None.
-            end_date (datetime, optional): The end date of the range. Defaults to None.
-
-        Returns:
-            int: The number of summaries within the specified date range.
-        """
-        try:
-            query = self.db.collection("summaries").where("user_id", "==", user_id)
-
-            if start_date:
-                query = query.where("timestamp", ">=", start_date)
-            if end_date:
-                query = query.where("timestamp", "<=", end_date)
-
-            docs = query.stream()
-            return sum(1 for _ in docs)
-        except Exception as e:
-            logger.error(f"Error counting user summaries: {e}")
+            logger.error(f"Error getting user summary count: {str(e)}")
             return 0
 
     def store_subscription(self, subscription_data: Dict) -> None:
         """Store or update a subscription record in Firestore.
 
         Args:
-            subscription_data: Dictionary containing subscription details from Stripe
+            subscription_data: Dictionary containing subscription details
         """
         start_time = time.time()
         try:
@@ -753,6 +666,241 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error cancelling subscription: {e}", exc_info=True)
             return False
+
+    def get_user_preferences(self, user_id: int) -> Dict:
+        """Get user's preferences."""
+        try:
+            user_ref = self.db.collection("users").document(str(user_id))
+            user_data = user_ref.get()
+
+            if not user_data.exists:
+                return {
+                    "menu_language": "en",
+                    "summary_language": "en",
+                    "summary_length": "medium",
+                    "audio_enabled": False,
+                    "voice_gender": "female",
+                    "voice_language": "en",
+                    "notifications_enabled": True,
+                }
+
+            user_dict = user_data.to_dict()
+            preferences = user_dict.get("preferences", {})
+
+            # Ensure all preference fields exist with defaults
+            default_preferences = {
+                "menu_language": "en",
+                "summary_language": "en",
+                "summary_length": "medium",
+                "audio_enabled": False,
+                "voice_gender": "female",
+                "voice_language": "en",
+                "notifications_enabled": True,
+            }
+
+            # Update preferences with defaults for missing keys
+            for key, default_value in default_preferences.items():
+                if key not in preferences:
+                    preferences[key] = default_value
+
+            return preferences
+        except Exception as e:
+            logger.error(f"Error getting user preferences: {e}")
+            return {
+                "menu_language": "en",
+                "summary_language": "en",
+                "summary_length": "medium",
+                "audio_enabled": False,
+                "voice_gender": "female",
+                "voice_language": "en",
+                "notifications_enabled": True,
+            }
+
+    def update_user_preferences(self, user_id: int, preferences: Dict) -> None:
+        """Update user's preferences."""
+        try:
+            user_ref = self.db.collection("users").document(str(user_id))
+
+            # Get current preferences
+            current_data = user_ref.get().to_dict() or {}
+            current_preferences = current_data.get("preferences", {})
+
+            # Ensure we're not nesting preferences
+            if "preferences" in preferences:
+                preferences = preferences["preferences"]
+
+            # Update only provided preferences, keeping existing ones
+            updated_preferences = {**current_preferences, **preferences}
+
+            # Ensure notifications_enabled is boolean
+            if "notifications_enabled" in updated_preferences:
+                updated_preferences["notifications_enabled"] = bool(
+                    updated_preferences["notifications_enabled"]
+                )
+
+            # Set without merge to avoid nesting
+            user_ref.update({"preferences": updated_preferences})
+
+            # Track the update
+            self._track_firestore_operation("write", "users")
+
+        except Exception as e:
+            logger.error(f"Error updating user preferences: {e}")
+            raise
+
+    # Error Tracking
+    def log_error(
+        self, error_type: str, error_message: str, user_id: Optional[int] = None
+    ) -> None:
+        """Log error for monitoring."""
+        error_ref = self.db.collection("errors").document()
+        error_data = {
+            "type": error_type,
+            "message": error_message,
+            "user_id": user_id,
+            "timestamp": firestore.SERVER_TIMESTAMP,
+        }
+        error_ref.set(error_data)
+
+    # Payment Management
+    def log_payment_attempt(
+        self,
+        user_id: int,
+        tier: str,
+        amount: int,
+        currency: str,
+        payment_type: str = "fiat",
+    ) -> None:
+        """Log payment attempt in database."""
+        payment_ref = self.db.collection("payments").document()
+        payment_data = {
+            "user_id": user_id,
+            "tier": tier,
+            "amount": amount,
+            "currency": currency,
+            "payment_type": payment_type,
+            "status": "pending",
+            "timestamp": firestore.SERVER_TIMESTAMP,
+        }
+        payment_ref.set(payment_data)
+
+    def log_successful_payment(
+        self, user_id: int, tier: str, amount: int, currency: str
+    ) -> None:
+        """Log successful payment in database."""
+        # Update latest pending payment to successful
+        payments_ref = (
+            self.db.collection("payments")
+            .where("user_id", "==", user_id)
+            .where("status", "==", "pending")
+            .order_by("timestamp", direction=firestore.Query.DESCENDING)
+            .limit(1)
+        )
+
+        for doc in payments_ref.stream():
+            doc.reference.update(
+                {"status": "completed", "completed_at": firestore.SERVER_TIMESTAMP}
+            )
+
+    def update_premium_status(self, user_id: int, premium_data: Dict) -> None:
+        """Update user's premium status with all necessary fields."""
+        user_ref = self.db.collection("users").document(str(user_id))
+
+        # Get current user data
+        user_data = user_ref.get()
+        if not user_data.exists:
+            raise ValueError(f"User {user_id} not found in database")
+
+        current_data = user_data.to_dict()
+
+        # Update premium fields
+        update_data = {
+            "premium": {
+                "tier": premium_data["tier"],
+                "active": premium_data["active"],
+                "expiry_date": premium_data["expiry_date"],
+                "summaries_limit": premium_data.get("summaries_limit", 5),
+                "subscription_id": premium_data.get("subscription_id"),
+                "activation_date": firestore.SERVER_TIMESTAMP,
+                "summaries_used": 0,  # Reset summaries used when upgrading
+            },
+            "last_seen": firestore.SERVER_TIMESTAMP,
+        }
+
+        # Update the document
+        user_ref.set(update_data, merge=True)
+
+        # Log the premium status change
+        self.metrics.log_premium_status_change(
+            user_id=user_id,
+            old_tier=current_data.get("premium", {}).get("tier", "free"),
+            new_tier=premium_data["tier"],
+            active=premium_data["active"],
+        )
+
+    def get_premium_status(self, user_id: int) -> Optional[Dict]:
+        """Get user's premium status."""
+        user_ref = self.db.collection("users").document(str(user_id))
+        user_data = user_ref.get()
+
+        if not user_data.exists:
+            return None
+
+        user_dict = user_data.to_dict()
+        return user_dict.get("premium")
+
+    def increment_summaries_used(self, user_id: int) -> None:
+        """Increment the number of summaries used by a premium user."""
+        user_ref = self.db.collection("users").document(str(user_id))
+        user_ref.update({"premium.summaries_used": firestore.Increment(1)})
+
+    def check_summary_limits(self, user_id: int) -> Dict:
+        """Check user's summary usage against their tier limits.
+
+        Returns:
+            Dict containing:
+            - remaining_summaries: int
+            - total_limit: int
+            - has_reached_limit: bool
+            - tier: str
+            - summaries_used: int
+        """
+        try:
+            user_data = self.get_user_data(user_id)
+            premium = user_data.get("premium", {})
+            stats = user_data.get("stats", {})
+
+            # Get current month's usage
+            current_month = datetime.now().strftime("%Y-%m")
+            monthly_stats = stats.get("monthly", {})
+            current_month_stats = monthly_stats.get(
+                current_month, {"summaries_used": 0}
+            )
+
+            summaries_used = current_month_stats.get("summaries_used", 0)
+            summaries_limit = premium.get(
+                "summaries_limit", 5
+            )  # Default to free tier limit
+            tier = premium.get("tier", "free")
+
+            return {
+                "remaining_summaries": max(0, summaries_limit - summaries_used),
+                "total_limit": summaries_limit,
+                "has_reached_limit": summaries_used >= summaries_limit,
+                "tier": tier,
+                "summaries_used": summaries_used,
+            }
+
+        except Exception as e:
+            logger.error(f"Error checking summary limits: {str(e)}")
+            # Return safe defaults
+            return {
+                "remaining_summaries": 0,
+                "total_limit": 5,
+                "has_reached_limit": True,
+                "tier": "free",
+                "summaries_used": 0,
+            }
 
 
 # Create a singleton instance

@@ -1,6 +1,6 @@
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import InlineKeyboardMarkup
 from src.core.localization import get_message
-from src.core.keyboards.base import create_keyboard
+from src.core.keyboards.menu import create_keyboard
 
 
 def create_summary_keyboard(language: str, is_pro: bool = False) -> InlineKeyboardMarkup:

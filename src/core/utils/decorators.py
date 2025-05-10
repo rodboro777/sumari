@@ -5,17 +5,17 @@ from functools import wraps
 from telegram import Update
 from telegram.constants import ParseMode
 from src.core.localization import get_message
+from telegram.ext import ContextTypes
 
 logger = logging.getLogger(__name__)
 
 
 def handle_callback_exceptions(func):
     """Decorator to handle exceptions in callback handlers."""
-
     @wraps(func)
-    async def wrapper(update: Update, context, *args, **kwargs):
+    async def wrapper(update: Update, *args, **kwargs):
         try:
-            return await func(update, context, *args, **kwargs)
+            return await func(update, *args, **kwargs)
         except Exception as e:
             logger.error(f"Error in {func.__name__}: {e}", exc_info=True)
             if update.callback_query:

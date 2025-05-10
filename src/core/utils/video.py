@@ -3,7 +3,7 @@
 import re
 from typing import Dict, Optional
 import aiohttp
-
+from src.config import GEMINI_API_KEY
 
 def extract_video_id(url: str) -> Optional[str]:
     """Extract YouTube video ID from various URL formats."""
@@ -30,7 +30,7 @@ async def get_video_info(video_id: str) -> Optional[Dict]:
     """Get video information using YouTube Data API."""
     try:
         # Use YouTube Data API to get video details
-        api_key = "AIzaSyA0PWFNr7pw9v5y8JeDSWANXC7H53oid2E"
+        api_key = GEMINI_API_KEY
         url = f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&key={api_key}&part=snippet,contentDetails"
 
         async with aiohttp.ClientSession() as session:

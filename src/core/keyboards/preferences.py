@@ -1,53 +1,13 @@
 """Preferences-related keyboard layouts."""
 
-from typing import Dict, List
 from telegram import InlineKeyboardMarkup
 
-from .base import create_keyboard, ButtonData
+from .menu import create_keyboard
 from src.core.localization import get_message
-
-PREFERENCES_BUTTONS = {
-    "summary_length": {
-        "callback_data": "show_summary_length",
-    },
-    "summary_language": {
-        "callback_data": "show_summary_language",
-    },
-    "voice_settings": {
-        "callback_data": "show_voice_settings",
-    },
-    "back": {
-        "callback_data": "back_to_menu",
-    },
-}
-
-LANGUAGE_OPTIONS = {
-    "en": "🇬🇧 English",
-    "ru": "🇷🇺 Русский",
-    "es": "🇪🇸 Español",
-    "fr": "🇫🇷 Français",
-    "de": "🇩🇪 Deutsch",
-    "it": "🇮🇹 Italiano",
-    "pt": "🇵🇹 Português",
-    "nl": "🇳🇱 Nederlands",
-    "pl": "🇵🇱 Polski",
-    "uk": "🇺🇦 Українська",
-    "tr": "🇹🇷 Türkçe",
-    "ar": "🇸🇦 العربية",
-    "hi": "🇮🇳 हिन्दी",
-    "bn": "🇧🇩 বাংলা",
-    "id": "🇮🇩 Indonesia",
-    "ja": "🇯🇵 日本語",
-    "ko": "🇰🇷 한국어",
-    "th": "🇹🇭 ไทย",
-    "vi": "🇻🇳 Tiếng Việt",
-    "zh": "🇨🇳 中文",
-}
-
-MENU_LANGUAGE_OPTIONS = {
-    "en": "🇬🇧 English",
-    "ru": "🇷🇺 Русский",
-}
+from src.core.utils import (
+    LANGUAGE_OPTIONS,
+    
+)   
 
 
 def create_preferences_keyboard(
@@ -63,15 +23,13 @@ def create_preferences_keyboard(
         [
             {
                 "text": get_message("btn_pref_summary_length", language),
-                "callback_data": PREFERENCES_BUTTONS["summary_length"]["callback_data"],
+                "callback_data": "show_summary_length",
             }
         ],
         [
             {
                 "text": get_message("btn_pref_summary_language", language),
-                "callback_data": PREFERENCES_BUTTONS["summary_language"][
-                    "callback_data"
-                ],
+                "callback_data": "show_summary_language",
             }
         ],
     ]
@@ -82,9 +40,7 @@ def create_preferences_keyboard(
             [
                 {
                     "text": get_message("btn_pref_voice_settings", language),
-                    "callback_data": PREFERENCES_BUTTONS["voice_settings"][
-                        "callback_data"
-                    ],
+                    "callback_data": "show_voice_settings",
                 }
             ]
         )
@@ -93,7 +49,7 @@ def create_preferences_keyboard(
         [
             {
                 "text": get_message("btn_pref_back", language),
-                "callback_data": PREFERENCES_BUTTONS["back"]["callback_data"],
+                "callback_data": "back_to_menu",
             }
         ]
     )
@@ -207,35 +163,3 @@ def create_summary_length_keyboard(
 
     return create_keyboard(buttons, language)
 
-
-def create_menu_language_selection_keyboard(
-    language: str, current_lang: str = None
-) -> InlineKeyboardMarkup:
-    """Create menu language selection keyboard with only English and Russian options.
-
-    Args:
-        language: Interface language code
-        current_lang: Currently selected language (to show checkmark)
-    """
-    buttons = []
-
-    # Add language options with checkmarks
-    for lang_code, lang_name in MENU_LANGUAGE_OPTIONS.items():
-        display_name = f"✅ {lang_name}" if lang_code == current_lang else lang_name
-        button = {
-            "text": display_name,
-            "callback_data": f"lang_{lang_code}",
-        }
-        buttons.append([button])
-
-    # Add back button
-    buttons.append(
-        [
-            {
-                "text": get_message("btn_back", language),
-                "callback_data": "back_to_menu",
-            }
-        ]
-    )
-
-    return create_keyboard(buttons, language)

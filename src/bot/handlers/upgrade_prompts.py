@@ -1,18 +1,12 @@
 """Module for handling upgrade prompts and notifications."""
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
-
-from src.core.localization import get_message
-from src.core.utils import get_user_language
 from src.config import TIER_LIMITS
 
 
-async def send_upgrade_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, summaries_used: int) -> None:
+async def send_upgrade_prompt(update: Update, summaries_used: int) -> None:
     """Send an upgrade prompt when user is close to their limit."""
-    user_id = update.effective_user.id
-    language = get_user_language(context, user_id)
     
     # Get free tier limit
     free_limit = TIER_LIMITS["free"]["monthly_summaries"]

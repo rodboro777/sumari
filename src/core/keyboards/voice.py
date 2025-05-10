@@ -1,26 +1,10 @@
 """Voice-related keyboard layouts."""
 
-from typing import Dict
 from telegram import InlineKeyboardMarkup
 
-from .base import create_keyboard, ButtonData
-from .preferences import LANGUAGE_OPTIONS
+from .menu import create_keyboard
+from src.core.utils.language_config import LANGUAGE_OPTIONS
 from src.core.localization import get_message
-
-VOICE_BUTTONS = {
-    "male": {
-        "callback_data": "set_voice_male",
-    },
-    "female": {
-        "callback_data": "set_voice_female",
-    },
-    "language": {
-        "callback_data": "show_voice_language",
-    },
-    "back": {
-        "callback_data": "back_to_preferences",
-    },
-}
 
 
 def create_voice_selection_keyboard(
@@ -47,22 +31,19 @@ def create_voice_selection_keyboard(
     ])
 
     # Add gender selection buttons
-    gender_buttons = []
-    for gender in ["male", "female"]:
-        button = {
-            "text": get_message(f"btn_voice_{gender}", language),
-            "callback_data": VOICE_BUTTONS[gender]["callback_data"],
+    buttons.append([
+        {
+            "text": ("✅ " if gender == current_gender else "") + get_message(f"btn_voice_{gender}", language),
+            "callback_data": f"set_voice_{gender}",
         }
-        if gender == current_gender:
-            button["text"] = "✅ " + button["text"]
-        gender_buttons.append(button)
-    buttons.append(gender_buttons)
+        for gender in ["male", "female"]
+    ])
 
     # Add language selection button
     buttons.append([
         {
             "text": get_message("btn_voice_language", language),
-            "callback_data": VOICE_BUTTONS["language"]["callback_data"],
+            "callback_data": "voice_language_menu",
         }
     ])
 
@@ -70,10 +51,9 @@ def create_voice_selection_keyboard(
     buttons.append([
         {
             "text": get_message("btn_voice_back", language),
-            "callback_data": VOICE_BUTTONS["back"]["callback_data"],
+            "callback_data": "back_to_preferences",
         }
     ])
-
     return create_keyboard(buttons, language)
 
 

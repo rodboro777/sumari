@@ -2,7 +2,10 @@
 
 from datetime import datetime
 from typing import Dict, Optional
-
+from src.core.localization import (
+    get_message,
+)  # Import here to avoid circular imports
+from src.core.utils.text import escape_md  # Import escape_md utility
 
 def format_summary_for_telegram(text: str) -> str:
     """Format the summary for better readability in Telegram."""
@@ -53,11 +56,6 @@ def format_expiry_date(expiry_date: Optional[str], language: str = "en") -> str:
 
 def format_premium_status(status: Dict, language: str) -> str:
     """Format premium status message."""
-    from src.core.localization import (
-        get_message,
-    )  # Import here to avoid circular imports
-    from src.core.utils.text import escape_md  # Import escape_md utility
-
     tier = status.get("tier", "free")
     summaries_used = status.get("summaries_used", 0)
     summaries_limit = status.get("summaries_limit", 3)
